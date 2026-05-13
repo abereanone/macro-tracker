@@ -13,7 +13,17 @@ import {
 
 type Env = { DB: D1Database };
 type Ctx = EventContext<Env, string, { path?: string[] }>;
-type DbUser = { id: string; email: string; protein_goal_g: number | null; calorie_goal_value: number | null; calorie_goal_type: string; preferred_weight_unit: string | null };
+type DbUser = {
+  id: string;
+  email: string;
+  first_name: string | null;
+  last_name: string | null;
+  protein_goal_g: number | null;
+  calorie_goal_value: number | null;
+  calorie_goal_type: string;
+  preferred_weight_unit: string | null;
+  timezone: string | null;
+};
 type DbFood = {
   id: string;
   owner_user_id: string;
@@ -47,6 +57,7 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
 
     if (method === 'GET' && path === '/me') return json({ ok: true, user: mapUser(user) });
     if (method === 'PUT' && path === '/me/settings') return updateSettings(ctx, user);
+    if (method === 'POST' && path === '/me/delete-data') return deleteMyData(ctx, user);
 
     if (path === '/foods' && method === 'GET') return listFoods(ctx, user, url);
     if (path === '/foods' && method === 'POST') return createFood(ctx, user);
@@ -152,26 +163,61 @@ function mapUser(user: DbUser) {
   return {
     id: user.id,
     email: user.email,
+    firstName: user.first_name ?? '',
+    lastName: user.last_name ?? '',
     proteinGoalG: user.protein_goal_g,
     calorieGoalValue: user.calorie_goal_value,
     calorieGoalType: (user.calorie_goal_type ?? 'manual') as 'manual' | 'goal-based',
     preferredWeightUnit: user.preferred_weight_unit ?? 'lb',
+    timezone: user.timezone ?? 'America/New_York',
   };
 }
 
 async function updateSettings(ctx: Ctx, user: DbUser) {
   const input = await body(ctx);
+  const firstName = optionalString(input.firstName);
+  const lastName = optionalString(input.lastName);
   const proteinGoal = optionalPositiveNumber(input.proteinGoalG, 'Protein goal');
   const calorieGoalValue = optionalPositiveNumber(input.calorieGoalValue, 'Calorie goal');
   const calorieGoalType = input.calorieGoalType === 'goal-based' ? 'goal-based' : 'manual';
   const unit = input.preferredWeightUnit ? requireWeightUnit(input.preferredWeightUnit) : 'lb';
+  const timezone = typeof input.timezone === 'string' && input.timezone.trim() ? input.timezone.trim() : 'America/New_York';
   await ctx.env.DB.prepare(
-    'UPDATE users SET protein_goal_g = ?, calorie_goal_value = ?, calorie_goal_type = ?, preferred_weight_unit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    'UPDATE users SET first_name = ?, last_name = ?, protein_goal_g = ?, calorie_goal_value = ?, calorie_goal_type = ?, preferred_weight_unit = ?, timezone = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
   )
-    .bind(proteinGoal, calorieGoalValue, calorieGoalType, unit, user.id)
+    .bind(firstName, lastName, proteinGoal, calorieGoalValue, calorieGoalType, unit, timezone, user.id)
     .run();
   const updated = await ctx.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first<DbUser>();
   return json({ ok: true, user: mapUser(updated!) });
+}
+
+async function deleteMyData(ctx: Ctx, user: DbUser) {
+  const input = await body(ctx);
+  if (input.confirm !== 'YES! I understand!') {
+    throw new ApiError('VALIDATION_ERROR', 'Confirmation is required before deleting data.');
+  }
+
+  await ctx.env.DB.batch([
+    ctx.env.DB.prepare('DELETE FROM diary_items WHERE user_id = ?').bind(user.id),
+    ctx.env.DB.prepare('DELETE FROM weight_entries WHERE user_id = ?').bind(user.id),
+    ctx.env.DB.prepare('DELETE FROM goal_plans WHERE user_id = ?').bind(user.id),
+    ctx.env.DB.prepare(
+      `DELETE FROM saved_meal_items
+       WHERE saved_meal_id IN (
+         SELECT id FROM saved_meals WHERE owner_user_id = ? AND visibility = 'private'
+       )`,
+    ).bind(user.id),
+    ctx.env.DB.prepare("DELETE FROM saved_meals WHERE owner_user_id = ? AND visibility = 'private'").bind(user.id),
+    ctx.env.DB.prepare(
+      `DELETE FROM saved_meal_items
+       WHERE food_id IN (
+         SELECT id FROM foods WHERE owner_user_id = ? AND visibility = 'private'
+       )`,
+    ).bind(user.id),
+    ctx.env.DB.prepare("DELETE FROM foods WHERE owner_user_id = ? AND visibility = 'private'").bind(user.id),
+  ]);
+
+  return json({ ok: true });
 }
 
 function mapFood(food: DbFood) {

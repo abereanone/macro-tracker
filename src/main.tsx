@@ -3,7 +3,17 @@ import { createRoot } from 'react-dom/client';
 import { Activity, BarChart3, CalendarDays, ChefHat, LogOut, Menu, Plus, Scale, Settings, Target, Utensils } from 'lucide-react';
 import './styles.css';
 
-type User = { id: string; email: string; proteinGoalG: number | null; calorieGoalValue: number | null; calorieGoalType: 'manual' | 'goal-based'; preferredWeightUnit: 'lb' | 'kg' };
+type User = {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  proteinGoalG: number | null;
+  calorieGoalValue: number | null;
+  calorieGoalType: 'manual' | 'goal-based';
+  preferredWeightUnit: 'lb' | 'kg';
+  timezone: string;
+};
 type Food = {
   id: string;
   ownerUserId: string;
@@ -21,6 +31,20 @@ type MealItem = { foodId: string; foodDescription?: string; quantity: number; qu
 type SavedMeal = { id: string; ownerUserId: string; name: string; description?: string; visibility: 'private' | 'public'; items: MealItem[] };
 
 const today = () => new Date().toLocaleDateString('en-CA');
+const timezones = [
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Phoenix',
+  'America/Los_Angeles',
+  'America/Anchorage',
+  'Pacific/Honolulu',
+  'UTC',
+  'Europe/London',
+  'Europe/Paris',
+  'Asia/Tokyo',
+  'Australia/Sydney',
+];
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -714,6 +738,8 @@ function Goals() {
 }
 
 function SettingsPage({ user, setUser }: { user: User; setUser: (user: User) => void }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteMessage, setDeleteMessage] = useState('');
   return (
     <section>
       <Header title="Settings" icon={<Settings />} />
@@ -721,30 +747,81 @@ function SettingsPage({ user, setUser }: { user: User; setUser: (user: User) => 
         <form onSubmit={async (event) => {
           event.preventDefault();
           const form = new FormData(event.currentTarget);
-          const res = await api<{ user: User }>('/me/settings', { method: 'PUT', body: JSON.stringify({ proteinGoalG: numberValue(form.get('proteinGoalG')), calorieGoalValue: numberValue(form.get('calorieGoalValue')), calorieGoalType: form.get('calorieGoalType'), preferredWeightUnit: form.get('preferredWeightUnit') }) });
+          const res = await api<{ user: User }>('/me/settings', { method: 'PUT', body: JSON.stringify({
+            firstName: form.get('firstName'),
+            lastName: form.get('lastName'),
+            proteinGoalG: numberValue(form.get('proteinGoalG')),
+            calorieGoalValue: numberValue(form.get('calorieGoalValue')),
+            calorieGoalType: form.get('calorieGoalType'),
+            preferredWeightUnit: form.get('preferredWeightUnit'),
+            timezone: form.get('timezone'),
+          }) });
           setUser(res.user);
         }}>
+          <div className="settings-row">
+            <label className="field">
+              <span>First name</span>
+              <input name="firstName" defaultValue={user.firstName ?? ''} placeholder="First" />
+            </label>
+            <label className="field">
+              <span>Last name</span>
+              <input name="lastName" defaultValue={user.lastName ?? ''} placeholder="Last" />
+            </label>
+          </div>
+          <div className="settings-row">
+            <label className="field">
+              <span>Preferred unit of measure for weight</span>
+              <select name="preferredWeightUnit" defaultValue={user.preferredWeightUnit}><option>lb</option><option>kg</option></select>
+            </label>
+            <label className="field">
+              <span>Protein Goal in grams</span>
+              <input name="proteinGoalG" type="number" step="1" defaultValue={user.proteinGoalG ?? ''} placeholder="160" />
+            </label>
+          </div>
+          <div className="settings-row">
+            <label className="field">
+              <span>Calorie Goal Type</span>
+              <select name="calorieGoalType" defaultValue={user.calorieGoalType}>
+                <option value="manual">Manual</option>
+                <option value="goal-based">Goal-Based</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Calorie Goal Value</span>
+              <input name="calorieGoalValue" type="number" step="1" defaultValue={user.calorieGoalValue ?? ''} placeholder="2000" />
+            </label>
+          </div>
           <label className="field">
-            <span>Protein Goal in grams</span>
-            <input name="proteinGoalG" type="number" step="1" defaultValue={user.proteinGoalG ?? ''} placeholder="160" />
-          </label>
-          <label className="field">
-            <span>Calorie Goal Type</span>
-            <select name="calorieGoalType" defaultValue={user.calorieGoalType}>
-              <option value="manual">Manual</option>
-              <option value="goal-based">Goal-Based</option>
+            <span>User timezone</span>
+            <select name="timezone" defaultValue={user.timezone ?? 'America/New_York'}>
+              {timezones.map((timezone) => <option key={timezone} value={timezone}>{timezone}</option>)}
             </select>
-          </label>
-          <label className="field">
-            <span>Calorie Goal Value</span>
-            <input name="calorieGoalValue" type="number" step="1" defaultValue={user.calorieGoalValue ?? ''} placeholder="2000" />
-          </label>
-          <label className="field">
-            <span>Preferred unit of measure for weight</span>
-            <select name="preferredWeightUnit" defaultValue={user.preferredWeightUnit}><option>lb</option><option>kg</option></select>
           </label>
           <button><Settings size={16} /> Save settings</button>
         </form>
+      </Panel>
+      <Panel title="Danger Zone">
+        <button className="danger-button" onClick={() => setConfirmDelete(true)}>DELETE ALL MY DATA</button>
+        {confirmDelete && (
+          <div className="warning-box">
+            <strong>All diary data will be deleted.</strong>
+            <span>This deletes diary entries, weights, goals, private foods, and private meals. Public foods and public meals you created will remain.</span>
+            <div className="form-actions">
+              <button
+                className="danger-button"
+                onClick={async () => {
+                  await api('/me/delete-data', { method: 'POST', body: JSON.stringify({ confirm: 'YES! I understand!' }) });
+                  setConfirmDelete(false);
+                  setDeleteMessage('Your diary data and private foods/meals were deleted.');
+                }}
+              >
+                YES! I understand!
+              </button>
+              <button className="ghost" onClick={() => setConfirmDelete(false)}>NO! Do not delete me!</button>
+            </div>
+          </div>
+        )}
+        {deleteMessage && <div className="notice success">{deleteMessage}</div>}
       </Panel>
     </section>
   );
