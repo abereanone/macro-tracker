@@ -168,6 +168,7 @@ function Dashboard({ user }: { user: User }) {
   const [mealLabel, setMealLabel] = useState('Other');
   const [selectedFoodId, setSelectedFoodId] = useState('');
   const [activeGoal, setActiveGoal] = useState<any>(null);
+  const [popupMessage, setPopupMessage] = useState('');
   const [status, setStatus] = useState('');
   const load = () => {
     api(`/days/${date}`).then(setDay);
@@ -184,6 +185,12 @@ function Dashboard({ user }: { user: User }) {
   const selectedFood = foods.find((food) => food.id === selectedFoodId) ?? foods[0];
   return (
     <section>
+      {popupMessage && (
+        <div className="toast" role="status">
+          <span>{popupMessage}</span>
+          <button className="ghost icon-button" onClick={() => setPopupMessage('')} aria-label="Dismiss notification">x</button>
+        </div>
+      )}
       <Header title="Today" icon={<CalendarDays />} />
       <div className="toolbar">
         <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
@@ -258,7 +265,7 @@ function Dashboard({ user }: { user: User }) {
         <Panel title="Add Saved Meal">
           <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
           <div className="list compact">
-            {meals.map((meal) => <button key={meal.id} onClick={async () => { await api(`/saved-meals/${meal.id}/add-to-diary`, { method: 'POST', body: JSON.stringify({ eatenDate: date, mealLabel }) }); load(); }}>{meal.name}</button>)}
+            {meals.map((meal) => <button key={meal.id} onClick={async () => { await api(`/saved-meals/${meal.id}/add-to-diary`, { method: 'POST', body: JSON.stringify({ eatenDate: date, mealLabel }) }); setPopupMessage(`${meal.name} added for ${date} and ${mealLabel}`); load(); }}>{meal.name}</button>)}
           </div>
         </Panel>
       </div>

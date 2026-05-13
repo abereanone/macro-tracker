@@ -107,12 +107,30 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
   display: grid;
   gap: 8px;
 }
+.toast {
+  position: fixed;
+  right: 16px;
+  top: 16px;
+  z-index: 30;
+  max-width: min(360px, calc(100vw - 32px));
+  border: 1px solid #cbd6d1;
+  border-left: 4px solid #22614d;
+  border-radius: 8px;
+  background: white;
+  box-shadow: 0 12px 38px rgba(24, 61, 51, 0.16);
+  padding: 10px 10px 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.toast span { flex: 1; }
 .goals-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
 .settings-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .row { display: grid; grid-template-columns: 1fr 120px; gap: 10px; }
 .compact-form { display: grid; grid-template-columns: minmax(90px, 130px) 80px auto; gap: 8px; align-items: center; }
 .segmented { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.segmented + .list { margin-top: 12px; }
 .segmented button { min-height: 34px; padding: 0 8px; font-size: 13px; }
 .segmented button.active { background: #22614d; color: white; }
 .serving-row { display: grid; grid-template-columns: minmax(110px, 150px) minmax(140px, 180px); gap: 10px; align-items: end; }
