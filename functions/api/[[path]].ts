@@ -695,18 +695,31 @@ async function activeGoalPlan(ctx: Ctx, user: DbUser) {
   if (!plan) return json({ ok: true, plan: null });
   const latestWeight = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? ORDER BY entry_date DESC LIMIT 1').bind(user.id).first<DbWeight>();
   if (!latestWeight) return json({ ok: true, plan, calculation: null, message: 'Add a current weight to calculate target calories.' });
+  const latestWeightLb = toLb(latestWeight.weight_value, latestWeight.weight_unit);
+  const goalWeightLb = toLb(plan.goal_weight_value, plan.goal_weight_unit);
+  const daysToTarget = Math.max(
+    0,
+    Math.ceil((Date.parse(`${plan.target_date}T00:00:00Z`) - Date.parse(`${latestWeight.entry_date}T00:00:00Z`)) / 86_400_000),
+  );
+  const weeklyChangeLb = daysToTarget > 0 ? ((goalWeightLb - latestWeightLb) / daysToTarget) * 7 : 0;
+  const goalPace = {
+    latestWeight: mapWeightPoint(latestWeight),
+    daysToTarget,
+    weeklyChangeLb: Math.round((weeklyChangeLb + Number.EPSILON) * 100) / 100,
+    direction: weeklyChangeLb < 0 ? 'lose' : weeklyChangeLb > 0 ? 'gain' : 'maintain',
+  };
   const maintenanceEnd = latestWeight.entry_date;
   const maintenanceStart = new Date(Date.parse(`${maintenanceEnd}T00:00:00Z`) - 13 * 86_400_000).toISOString().slice(0, 10);
   const maintenance = await maintenanceForRange(ctx, user, maintenanceStart, maintenanceEnd);
-  if (!maintenance) return json({ ok: true, plan, calculation: null, message: 'Add at least two weights and food logs to estimate maintenance.' });
+  if (!maintenance) return json({ ok: true, plan, goalPace, calculation: null, message: 'Add at least two weights and food logs to estimate maintenance.' });
   const calculation = calculateGoalTarget({
-    currentWeightLb: toLb(latestWeight.weight_value, latestWeight.weight_unit),
-    goalWeightLb: toLb(plan.goal_weight_value, plan.goal_weight_unit),
+    currentWeightLb: latestWeightLb,
+    goalWeightLb,
     currentDate: new Date().toISOString().slice(0, 10),
     targetDate: plan.target_date,
     maintenanceCalories: maintenance.estimatedMaintenanceCalories,
   });
-  return json({ ok: true, plan, maintenance, calculation });
+  return json({ ok: true, plan, goalPace, maintenance, calculation });
 }
 
 async function maintenanceForRange(ctx: Ctx, user: DbUser, start: string, end: string) {

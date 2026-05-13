@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, BarChart3, CalendarDays, ChefHat, LogOut, Plus, Scale, Settings, Target, Utensils } from 'lucide-react';
+import { Activity, BarChart3, CalendarDays, ChefHat, LogOut, Menu, Plus, Scale, Settings, Target, Utensils } from 'lucide-react';
 import './styles.css';
 
 type User = { id: string; email: string; proteinGoalG: number | null; calorieGoalValue: number | null; calorieGoalType: 'manual' | 'goal-based'; preferredWeightUnit: 'lb' | 'kg' };
@@ -45,6 +45,7 @@ function App() {
   const [user, setUser] = useState<User | null>(null);
   const [route, setRoute] = useState(location.pathname === '/login' ? 'login' : location.pathname.replace('/app/', '') || 'app');
   const [message, setMessage] = useState('');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     api<{ ok: boolean; user: User }>('/me')
@@ -57,6 +58,7 @@ function App() {
 
   function navigate(next: string) {
     setRoute(next);
+    setMobileMenuOpen(false);
     history.replaceState(null, '', next === 'login' ? '/login' : next === 'app' ? '/app' : `/app/${next}`);
   }
 
@@ -86,7 +88,13 @@ function App() {
 
   return (
     <div className="shell">
-      <aside className="nav">
+      <header className="mobile-topbar">
+        <div className="brand"><Activity size={20} /> Macro Tracker</div>
+        <button className="ghost icon-button" onClick={() => setMobileMenuOpen((open) => !open)} aria-label="Toggle menu">
+          <Menu size={20} />
+        </button>
+      </header>
+      <aside className={mobileMenuOpen ? 'nav open' : 'nav'}>
         <div className="brand"><Activity size={22} /> Macro Tracker</div>
         <button className={route === 'app' ? 'active' : ''} onClick={() => navigate('app')}><CalendarDays size={18} /> Today</button>
         <button className={route === 'foods' ? 'active' : ''} onClick={() => navigate('foods')}><Utensils size={18} /> Foods</button>
@@ -134,15 +142,22 @@ function Dashboard({ user }: { user: User }) {
   const [foods, setFoods] = useState<Food[]>([]);
   const [meals, setMeals] = useState<SavedMeal[]>([]);
   const [mealLabel, setMealLabel] = useState('Other');
+  const [selectedFoodId, setSelectedFoodId] = useState('');
+  const [activeGoal, setActiveGoal] = useState<any>(null);
   const [status, setStatus] = useState('');
   const load = () => {
     api(`/days/${date}`).then(setDay);
-    api<{ foods: Food[] }>('/foods?scope=all').then((res) => setFoods(res.foods));
+    api<{ foods: Food[] }>('/foods?scope=all').then((res) => {
+      setFoods(res.foods);
+      setSelectedFoodId((current) => current || res.foods[0]?.id || '');
+    });
     api<{ meals: SavedMeal[] }>('/saved-meals?scope=all').then((res) => setMeals(res.meals));
+    api('/goal-plans/active').then(setActiveGoal).catch(() => setActiveGoal(null));
   };
   useEffect(load, [date]);
 
   const totals = day?.totals;
+  const selectedFood = foods.find((food) => food.id === selectedFoodId) ?? foods[0];
   return (
     <section>
       <Header title="Today" icon={<CalendarDays />} />
@@ -155,10 +170,10 @@ function Dashboard({ user }: { user: User }) {
           <Metric label="Protein" value={`${totals.proteinG}g`} />
           <Metric label="Fat" value={`${totals.fatG}g`} />
           <Metric label="Carbs" value={`${totals.carbohydrateG}g`} />
-          <Metric label="Calories" value={Math.round(totals.calories)} />
           <Metric label="Protein %" value={`${totals.proteinPercent}%`} />
           <Metric label="Fat %" value={`${totals.fatPercent}%`} />
           <Metric label="Carb %" value={`${totals.carbohydratePercent}%`} />
+          <Metric label="Calories" value={Math.round(totals.calories)} />
         </div>
       )}
       <div className="goals-row">
@@ -166,7 +181,7 @@ function Dashboard({ user }: { user: User }) {
           {day?.proteinGoal
             ? day.proteinGoal.met
               ? `Protein goal met: ${day.proteinGoal.actualG}g of ${day.proteinGoal.goalG}g`
-              : `${Math.round(day.proteinGoal.remainingG)}g protein remaining`
+              : `${Math.round(day.proteinGoal.remainingG)}g protein remaining (${Math.round(day.proteinGoal.remainingG * 4)} calories from protein)`
             : 'Add a protein goal in settings.'}
         </div>
         <div className={user.calorieGoalValue && totals?.calories >= user.calorieGoalValue ? 'notice success calories' : 'notice calories'}>
@@ -177,6 +192,16 @@ function Dashboard({ user }: { user: User }) {
             : 'Add a calorie goal in settings.'}
         </div>
       </div>
+      {activeGoal?.plan && (
+        <div className="notice goal-summary">
+          <div>Current goal: <strong>{activeGoal.plan.goal_weight_value} {activeGoal.plan.goal_weight_unit}</strong> by <strong>{activeGoal.plan.target_date}</strong></div>
+          <div>
+            {activeGoal.goalPace
+              ? `Needed average: ${activeGoal.goalPace.direction === 'maintain' ? 'maintain weight' : `${activeGoal.goalPace.direction} ${Math.abs(activeGoal.goalPace.weeklyChangeLb)} lb/week`} from ${activeGoal.goalPace.latestWeight.value} ${activeGoal.goalPace.latestWeight.unit} on ${activeGoal.goalPace.latestWeight.date}.`
+              : 'Add a current weight to calculate the weekly pace needed.'}
+          </div>
+        </div>
+      )}
       <div className="two-col">
         <Panel title="Log Food">
           <form
@@ -186,51 +211,55 @@ function Dashboard({ user }: { user: User }) {
               await api('/diary-items', {
                 method: 'POST',
                 body: JSON.stringify({
-                  foodId: form.get('foodId'),
+                  foodId: selectedFood?.id,
                   eatenDate: date,
-                  mealLabel: form.get('mealLabel'),
+                  mealLabel,
                   quantity: numberValue(form.get('quantity'), 1),
-                  quantityUnit: form.get('quantityUnit'),
+                  quantityUnit: selectedFood?.servingUnit ?? 'g',
                 }),
               });
               event.currentTarget.reset();
               load();
             }}
           >
-            <select name="foodId" required>{foods.map((food) => <option key={food.id} value={food.id}>{food.description}</option>)}</select>
-            <div className="row"><input name="quantity" type="number" step="0.01" placeholder="Qty" required /><input name="quantityUnit" placeholder="Unit" defaultValue="g" required /></div>
-            <select name="mealLabel" defaultValue="Lunch"><option>Breakfast</option><option>Lunch</option><option>Dinner</option><option>Snack</option><option>Other</option></select>
+            <select name="foodId" value={selectedFood?.id ?? ''} onChange={(event) => setSelectedFoodId(event.target.value)} required>{foods.map((food) => <option key={food.id} value={food.id}>{food.description}</option>)}</select>
+            <div className="row">
+              <input name="quantity" type="number" step="0.01" placeholder="Qty" required />
+              <div className="fixed-value" aria-label="Unit of measure">{selectedFood?.servingUnit ?? '-'}</div>
+            </div>
+            <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
             <button><Plus size={16} /> Add food</button>
           </form>
         </Panel>
-        <Panel title="Weight">
-          <form
-            onSubmit={async (event) => {
-              event.preventDefault();
-              const form = new FormData(event.currentTarget);
-              await api('/weight', { method: 'POST', body: JSON.stringify({ entryDate: date, weightValue: numberValue(form.get('weightValue')), weightUnit: form.get('weightUnit') }) });
-              load();
-            }}
-          >
-            <div className="row"><input name="weightValue" type="number" step="0.1" placeholder={day?.weight?.weight_value ?? 'Weight'} required /><select name="weightUnit" defaultValue={user.preferredWeightUnit}><option>lb</option><option>kg</option></select></div>
-            <button><Scale size={16} /> Save weight</button>
-          </form>
-          {day?.weight && <p>{day.weight.weight_value} {day.weight.weight_unit} logged for this day.</p>}
+        <Panel title="Add Saved Meal">
+          <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
+          <div className="list compact">
+            {meals.map((meal) => <button key={meal.id} onClick={async () => { await api(`/saved-meals/${meal.id}/add-to-diary`, { method: 'POST', body: JSON.stringify({ eatenDate: date, mealLabel }) }); load(); }}>{meal.name}</button>)}
+          </div>
         </Panel>
       </div>
-      <Panel title="Add Saved Meal">
-        <div className="field">
-          <span>Meal Label</span>
-          <select value={mealLabel} onChange={(event) => setMealLabel(event.target.value)}>
-            <option>Breakfast</option><option>Lunch</option><option>Dinner</option><option>Snack</option><option>Other</option>
-          </select>
-        </div>
-        <div className="list compact">
-          {meals.map((meal) => <button key={meal.id} onClick={async () => { await api(`/saved-meals/${meal.id}/add-to-diary`, { method: 'POST', body: JSON.stringify({ eatenDate: date, mealLabel }) }); load(); }}>{meal.name}</button>)}
-        </div>
-      </Panel>
-      <Panel title="Diary">
+      <Panel title={`Diary for ${date}`}>
         <div className="list">
+          <div className="list-row diary-weight">
+            <span>
+              <strong>Weight</strong>
+              <small>{day?.weight ? `${day.weight.weight_value} ${day.weight.weight_unit}` : 'No weight logged'}</small>
+            </span>
+            <form
+              className="compact-form"
+              onSubmit={async (event) => {
+                event.preventDefault();
+                const form = new FormData(event.currentTarget);
+                await api('/weight', { method: 'POST', body: JSON.stringify({ entryDate: date, weightValue: numberValue(form.get('weightValue')), weightUnit: form.get('weightUnit') }) });
+                event.currentTarget.reset();
+                load();
+              }}
+            >
+              <input name="weightValue" type="number" step="0.1" placeholder={day?.weight?.weight_value ?? 'Weight'} required />
+              <select name="weightUnit" defaultValue={day?.weight?.weight_unit ?? user.preferredWeightUnit}><option>lb</option><option>kg</option></select>
+              <button><Scale size={16} /> Save</button>
+            </form>
+          </div>
           {day?.items?.map((item: any) => (
             <div className="list-row" key={item.id}>
               <span><strong>{item.foodDescription}</strong><small>{item.meal_label ?? 'Other'} · {item.quantity}{item.quantity_unit}</small></span>
@@ -242,6 +271,18 @@ function Dashboard({ user }: { user: User }) {
       </Panel>
       {status && <p>{status}</p>}
     </section>
+  );
+}
+
+function MealLabelPicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="segmented" aria-label="Meal label">
+      {['Breakfast', 'Lunch', 'Dinner', 'Snack', 'Other'].map((label) => (
+        <button key={label} type="button" className={value === label ? 'active' : 'ghost'} onClick={() => onChange(label)}>
+          {label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -284,6 +325,9 @@ function FoodForm({ food, onSave, onCancel }: { food: Food | null; onSave: (food
   const [servingUnit, setServingUnit] = useState('g');
   const [visibility, setVisibility] = useState<'public' | 'private'>('public');
   const [macros, setMacros] = useState({ proteinG: 0, fatG: 0, carbohydrateG: 0 });
+  const [calories, setCalories] = useState('');
+  const [caloriesTouched, setCaloriesTouched] = useState(false);
+  const [calorieWarning, setCalorieWarning] = useState<{ entered: number; calculated: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const calculatedCalories = Math.round(macros.proteinG * 4 + macros.fatG * 9 + macros.carbohydrateG * 4);
@@ -298,38 +342,68 @@ function FoodForm({ food, onSave, onCancel }: { food: Food | null; onSave: (food
       fatG: food?.fatG ?? 0,
       carbohydrateG: food?.carbohydrateG ?? 0,
     });
+    setCalories(food ? String(food.calories) : '');
+    setCaloriesTouched(Boolean(food));
+    setCalorieWarning(null);
     setError('');
   }, [food]);
 
   function updateMacro(field: keyof typeof macros, value: string) {
     const parsed = Number(value);
-    setMacros((current) => ({ ...current, [field]: Number.isFinite(parsed) ? parsed : 0 }));
+    setMacros((current) => {
+      const next = { ...current, [field]: Number.isFinite(parsed) ? parsed : 0 };
+      if (!caloriesTouched) {
+        setCalories(String(Math.round(next.proteinG * 4 + next.fatG * 9 + next.carbohydrateG * 4)));
+      }
+      return next;
+    });
+    setCalorieWarning(null);
+  }
+
+  async function saveFood(caloriesToSave: number) {
+    if (saving) return;
+    setSaving(true);
+    setError('');
+    try {
+      const isUpdate = Boolean(food?.id);
+      const result = await api<{ food: Food }>(isUpdate ? `/foods/${food!.id}` : '/foods', { method: isUpdate ? 'PUT' : 'POST', body: JSON.stringify({
+        description, servingQuantity: Number(servingQuantity), servingUnit,
+        proteinG: macros.proteinG, fatG: macros.fatG, carbohydrateG: macros.carbohydrateG,
+        calories: caloriesToSave, visibility,
+      }) });
+      setDescription('');
+      setServingQuantity('');
+      setServingUnit('g');
+      setVisibility('public');
+      setMacros({ proteinG: 0, fatG: 0, carbohydrateG: 0 });
+      setCalories('');
+      setCaloriesTouched(false);
+      setCalorieWarning(null);
+      await onSave(result.food, isUpdate ? 'updated' : 'added');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Food could not be saved.');
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <form onSubmit={async (event) => {
       event.preventDefault();
       if (saving) return;
-      setSaving(true);
       setError('');
-      try {
-        const isUpdate = Boolean(food?.id);
-        const result = await api<{ food: Food }>(isUpdate ? `/foods/${food!.id}` : '/foods', { method: isUpdate ? 'PUT' : 'POST', body: JSON.stringify({
-          description, servingQuantity: Number(servingQuantity), servingUnit,
-          proteinG: macros.proteinG, fatG: macros.fatG, carbohydrateG: macros.carbohydrateG,
-          calories: calculatedCalories, visibility,
-        }) });
-        setDescription('');
-        setServingQuantity('');
-        setServingUnit('g');
-        setVisibility('public');
-        setMacros({ proteinG: 0, fatG: 0, carbohydrateG: 0 });
-        await onSave(result.food, isUpdate ? 'updated' : 'added');
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Food could not be saved.');
-      } finally {
-        setSaving(false);
+      const enteredCalories = Number(calories || calculatedCalories);
+      if (!Number.isFinite(enteredCalories) || enteredCalories < 0) {
+        setError('Calories must be greater than or equal to zero.');
+        return;
       }
+      const difference = Math.abs(enteredCalories - calculatedCalories);
+      const outsideTolerance = calculatedCalories > 0 ? difference / calculatedCalories > 0.1 : difference > 0;
+      if (outsideTolerance) {
+        setCalorieWarning({ entered: enteredCalories, calculated: calculatedCalories });
+        return;
+      }
+      await saveFood(enteredCalories);
     }}>
       <label className="field">
         <span>Food name</span>
@@ -366,7 +440,19 @@ function FoodForm({ food, onSave, onCancel }: { food: Food | null; onSave: (food
         </label>
         <label className="field">
           <span>Calories</span>
-          <input name="calories" type="number" value={calculatedCalories} readOnly />
+          <input
+            name="calories"
+            type="number"
+            step="1"
+            value={calories}
+            placeholder={String(calculatedCalories)}
+            onChange={(event) => {
+              setCalories(event.target.value);
+              setCaloriesTouched(true);
+              setCalorieWarning(null);
+            }}
+          />
+          <small>Calculated: {calculatedCalories}</small>
         </label>
       </div>
       <label className="field">
@@ -374,6 +460,16 @@ function FoodForm({ food, onSave, onCancel }: { food: Food | null; onSave: (food
         <select name="visibility" value={visibility} onChange={(event) => setVisibility(event.target.value as 'public' | 'private')}><option value="public">Public</option><option value="private">Private</option></select>
       </label>
       {error && <p className="error-text">{error}</p>}
+      {calorieWarning && (
+        <div className="warning-box">
+          <strong>Calories differ from macros.</strong>
+          <span>Entered calories are {calorieWarning.entered}; calculated calories are {calorieWarning.calculated}.</span>
+          <div className="form-actions">
+            <button type="button" onClick={() => saveFood(calorieWarning.entered)} disabled={saving}>Use entered calories</button>
+            <button type="button" className="ghost" onClick={() => saveFood(calorieWarning.calculated)} disabled={saving}>Use calculated calories</button>
+          </div>
+        </div>
+      )}
       <div className="form-actions">
         <button disabled={saving}><Plus size={16} /> {saving ? 'Saving...' : food?.id ? 'Save changes' : 'Add food'}</button>
         {food && <button type="button" className="ghost" onClick={onCancel}>Cancel</button>}
@@ -572,8 +668,12 @@ function Goals() {
       <Header title="Goals" icon={<Target />} />
       {activePlan?.plan && (
         <Panel title="Current Goal">
-          <p>Goal weight: <strong>{activePlan.plan.goal_weight_value} {activePlan.plan.goal_weight_unit}</strong></p>
-          <p>Target date: <strong>{activePlan.plan.target_date}</strong></p>
+          <p>Goal: <strong>{activePlan.plan.goal_weight_value} {activePlan.plan.goal_weight_unit}</strong> by <strong>{activePlan.plan.target_date}</strong></p>
+          <p>
+            {activePlan.goalPace
+              ? `Needed average: ${activePlan.goalPace.direction === 'maintain' ? 'maintain weight' : `${activePlan.goalPace.direction} ${Math.abs(activePlan.goalPace.weeklyChangeLb)} lb/week`} from ${activePlan.goalPace.latestWeight.value} ${activePlan.goalPace.latestWeight.unit} on ${activePlan.goalPace.latestWeight.date}.`
+              : 'Add a current weight to calculate the weekly pace needed.'}
+          </p>
         </Panel>
       )}
       <Panel title="Goal Plan">
