@@ -280,10 +280,25 @@ async function assertUniqueFoodDescription(ctx: Ctx, user: DbUser, description: 
 }
 
 async function listFoods(ctx: Ctx, user: DbUser, url: URL) {
-  const search = `%${(url.searchParams.get('search') ?? '').trim()}%`;
+  const search = (url.searchParams.get('search') ?? '').trim().toLowerCase();
+  const terms = search.split(/\s+/).filter(Boolean).map(escapeLike);
   const scope = url.searchParams.get('scope') ?? 'all';
-  const clauses = ['archived_at IS NULL', 'description LIKE ?'];
-  const params: unknown[] = [search];
+  const clauses = ['archived_at IS NULL'];
+  const params: unknown[] = [];
+  let orderBy = 'description';
+  const orderParams: unknown[] = [];
+
+  if (terms.length) {
+    clauses.push(`(${terms.map(() => "lower(description) LIKE ? ESCAPE '\\'").join(' OR ')})`);
+    params.push(...terms.map((term) => `%${term}%`));
+    orderBy = `CASE
+      WHEN lower(description) LIKE ? ESCAPE '\\' THEN 0
+      WHEN ${terms.map(() => "lower(description) LIKE ? ESCAPE '\\'").join(' AND ')} THEN 1
+      ELSE 2
+    END, description`;
+    orderParams.push(`${escapeLike(search)}%`, ...terms.map((term) => `%${term}%`));
+  }
+
   if (scope === 'mine') {
     clauses.push('owner_user_id = ?');
     params.push(user.id);
@@ -294,10 +309,14 @@ async function listFoods(ctx: Ctx, user: DbUser, url: URL) {
     clauses.push('(owner_user_id = ? OR visibility = ?)');
     params.push(user.id, 'public');
   }
-  const result = await ctx.env.DB.prepare(`SELECT * FROM foods WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT 8`)
-    .bind(...params)
+  const result = await ctx.env.DB.prepare(`SELECT * FROM foods WHERE ${clauses.join(' AND ')} ORDER BY ${orderBy}`)
+    .bind(...params, ...orderParams)
     .all<DbFood>();
   return json({ ok: true, foods: result.results.map(mapFood) });
+}
+
+function escapeLike(value: string) {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }
 
 async function createFood(ctx: Ctx, user: DbUser) {

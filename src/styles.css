@@ -128,6 +128,43 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
 .settings-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .row { display: grid; grid-template-columns: 1fr 120px; gap: 10px; }
+.food-search { display: grid; gap: 8px; }
+.food-results {
+  display: grid;
+  gap: 6px;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid #dde4df;
+  border-radius: 8px;
+  padding: 6px;
+  background: #fbfcfb;
+}
+.food-results button {
+  min-height: 58px;
+  justify-content: flex-start;
+  display: grid;
+  align-content: center;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  padding: 8px 10px;
+  text-align: left;
+}
+.food-results button span,
+.food-results button small {
+  width: 100%;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.food-results button span { white-space: nowrap; }
+.food-results button small { margin: 0; }
+.selected-food {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  color: #40504a;
+  font-size: 13px;
+}
 .compact-form { display: grid; grid-template-columns: minmax(90px, 130px) 80px auto; gap: 8px; align-items: center; }
 .segmented { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
 .segmented + .list { margin-top: 12px; }

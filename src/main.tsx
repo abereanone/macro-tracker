@@ -166,7 +166,8 @@ function Dashboard({ user }: { user: User }) {
   const [foods, setFoods] = useState<Food[]>([]);
   const [meals, setMeals] = useState<SavedMeal[]>([]);
   const [mealLabel, setMealLabel] = useState('Other');
-  const [selectedFoodId, setSelectedFoodId] = useState('');
+  const [foodSearch, setFoodSearch] = useState('');
+  const [selectedFood, setSelectedFood] = useState<Food | null>(null);
   const [foodQuantity, setFoodQuantity] = useState('');
   const [addingFood, setAddingFood] = useState(false);
   const [activeGoal, setActiveGoal] = useState<any>(null);
@@ -174,16 +175,26 @@ function Dashboard({ user }: { user: User }) {
   const [status, setStatus] = useState('');
   const load = () => {
     api(`/days/${date}`).then(setDay);
-    api<{ foods: Food[] }>('/foods?scope=all').then((res) => {
-      setFoods(res.foods);
-    });
     api<{ meals: SavedMeal[] }>('/saved-meals?scope=all').then((res) => setMeals(res.meals));
     api('/goal-plans/active').then(setActiveGoal).catch(() => setActiveGoal(null));
   };
   useEffect(load, [date]);
+  useEffect(() => {
+    const query = foodSearch.trim();
+    if (!query || selectedFood?.description === foodSearch) {
+      setFoods([]);
+      return;
+    }
+    let ignore = false;
+    api<{ foods: Food[] }>(`/foods?scope=all&search=${encodeURIComponent(query)}`).then((res) => {
+      if (!ignore) setFoods(res.foods);
+    });
+    return () => {
+      ignore = true;
+    };
+  }, [foodSearch, selectedFood]);
 
   const totals = day?.totals;
-  const selectedFood = foods.find((food) => food.id === selectedFoodId);
   const canAddFood = Boolean(selectedFood && Number(foodQuantity) > 0 && !addingFood);
   return (
     <section>
@@ -254,7 +265,9 @@ function Dashboard({ user }: { user: User }) {
                   }),
                 });
                 setPopupMessage(`${selectedFood.description} added for ${date} and ${mealLabel}`);
-                setSelectedFoodId('');
+                setSelectedFood(null);
+                setFoodSearch('');
+                setFoods([]);
                 setFoodQuantity('');
                 load();
               } finally {
@@ -262,10 +275,38 @@ function Dashboard({ user }: { user: User }) {
               }
             }}
           >
-            <select name="foodId" value={selectedFoodId} onChange={(event) => setSelectedFoodId(event.target.value)} required>
-              <option value="">Select food</option>
-              {foods.map((food) => <option key={food.id} value={food.id}>{food.description}</option>)}
-            </select>
+            <div className="food-search">
+              <input
+                name="foodSearch"
+                placeholder="Search food"
+                value={foodSearch}
+                onChange={(event) => {
+                  setFoodSearch(event.target.value);
+                  setSelectedFood(null);
+                }}
+                autoComplete="off"
+              />
+              {foods.length > 0 && (
+                <div className="food-results">
+                  {foods.map((food) => (
+                    <button
+                      key={food.id}
+                      type="button"
+                      className="ghost"
+                      onClick={() => {
+                        setSelectedFood(food);
+                        setFoodSearch(food.description);
+                        setFoods([]);
+                      }}
+                    >
+                      <span>{food.description}</span>
+                      <small>{food.servingQuantity}{food.servingUnit} - {food.proteinG}P {food.fatG}F {food.carbohydrateG}C</small>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {selectedFood && <div className="selected-food">Selected: <strong>{selectedFood.description}</strong></div>}
+            </div>
             <div className="row">
               <input name="quantity" type="number" step="0.01" placeholder="Qty" value={foodQuantity} onChange={(event) => setFoodQuantity(event.target.value)} required />
               <div className="fixed-value" aria-label="Unit of measure">{selectedFood?.servingUnit ?? '-'}</div>
@@ -355,7 +396,7 @@ function Foods({ user }: { user: User }) {
         <FoodForm food={editingFood} onSave={handleFoodSaved} onCancel={() => setEditingFood(null)} />
       </Panel>
       {message && <div className="notice success">{message}</div>}
-      <Panel title="Last 8 Foods Added">
+      <Panel title={search ? 'Matching Foods' : 'Foods'}>
         <div className="list">{foods.map((food) => <FoodRow key={food.id} food={food} mine={food.ownerUserId === user.id} reload={load} onCopy={() => setEditingFood({ ...food, id: '', ownerUserId: user.id })} onModify={() => setEditingFood(food)} />)}</div>
       </Panel>
     </section>
