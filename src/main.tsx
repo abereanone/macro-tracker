@@ -167,6 +167,8 @@ function Dashboard({ user }: { user: User }) {
   const [meals, setMeals] = useState<SavedMeal[]>([]);
   const [mealLabel, setMealLabel] = useState('Other');
   const [selectedFoodId, setSelectedFoodId] = useState('');
+  const [foodQuantity, setFoodQuantity] = useState('');
+  const [addingFood, setAddingFood] = useState(false);
   const [activeGoal, setActiveGoal] = useState<any>(null);
   const [popupMessage, setPopupMessage] = useState('');
   const [status, setStatus] = useState('');
@@ -174,7 +176,6 @@ function Dashboard({ user }: { user: User }) {
     api(`/days/${date}`).then(setDay);
     api<{ foods: Food[] }>('/foods?scope=all').then((res) => {
       setFoods(res.foods);
-      setSelectedFoodId((current) => current || res.foods[0]?.id || '');
     });
     api<{ meals: SavedMeal[] }>('/saved-meals?scope=all').then((res) => setMeals(res.meals));
     api('/goal-plans/active').then(setActiveGoal).catch(() => setActiveGoal(null));
@@ -182,7 +183,8 @@ function Dashboard({ user }: { user: User }) {
   useEffect(load, [date]);
 
   const totals = day?.totals;
-  const selectedFood = foods.find((food) => food.id === selectedFoodId) ?? foods[0];
+  const selectedFood = foods.find((food) => food.id === selectedFoodId);
+  const canAddFood = Boolean(selectedFood && Number(foodQuantity) > 0 && !addingFood);
   return (
     <section>
       {popupMessage && (
@@ -238,28 +240,38 @@ function Dashboard({ user }: { user: User }) {
           <form
             onSubmit={async (event) => {
               event.preventDefault();
-              const form = new FormData(event.currentTarget);
-              await api('/diary-items', {
-                method: 'POST',
-                body: JSON.stringify({
-                  foodId: selectedFood?.id,
-                  eatenDate: date,
-                  mealLabel,
-                  quantity: numberValue(form.get('quantity'), 1),
-                  quantityUnit: selectedFood?.servingUnit ?? 'g',
-                }),
-              });
-              event.currentTarget.reset();
-              load();
+              if (!selectedFood || !canAddFood) return;
+              setAddingFood(true);
+              try {
+                await api('/diary-items', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    foodId: selectedFood.id,
+                    eatenDate: date,
+                    mealLabel,
+                    quantity: Number(foodQuantity),
+                    quantityUnit: selectedFood.servingUnit,
+                  }),
+                });
+                setPopupMessage(`${selectedFood.description} added for ${date} and ${mealLabel}`);
+                setSelectedFoodId('');
+                setFoodQuantity('');
+                load();
+              } finally {
+                setAddingFood(false);
+              }
             }}
           >
-            <select name="foodId" value={selectedFood?.id ?? ''} onChange={(event) => setSelectedFoodId(event.target.value)} required>{foods.map((food) => <option key={food.id} value={food.id}>{food.description}</option>)}</select>
+            <select name="foodId" value={selectedFoodId} onChange={(event) => setSelectedFoodId(event.target.value)} required>
+              <option value="">Select food</option>
+              {foods.map((food) => <option key={food.id} value={food.id}>{food.description}</option>)}
+            </select>
             <div className="row">
-              <input name="quantity" type="number" step="0.01" placeholder="Qty" required />
+              <input name="quantity" type="number" step="0.01" placeholder="Qty" value={foodQuantity} onChange={(event) => setFoodQuantity(event.target.value)} required />
               <div className="fixed-value" aria-label="Unit of measure">{selectedFood?.servingUnit ?? '-'}</div>
             </div>
             <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
-            <button><Plus size={16} /> Add food</button>
+            <button disabled={!canAddFood}><Plus size={16} /> {addingFood ? 'Adding...' : 'Add food'}</button>
           </form>
         </Panel>
         <Panel title="Add Saved Meal">
@@ -744,67 +756,110 @@ function Goals() {
   );
 }
 
+type SettingsForm = {
+  firstName: string;
+  lastName: string;
+  preferredWeightUnit: string;
+  proteinGoalG: string;
+  calorieGoalType: string;
+  calorieGoalValue: string;
+  timezone: string;
+};
+
+function getSettingsForm(user: User): SettingsForm {
+  return {
+    firstName: user.firstName ?? '',
+    lastName: user.lastName ?? '',
+    preferredWeightUnit: user.preferredWeightUnit,
+    proteinGoalG: user.proteinGoalG == null ? '' : String(user.proteinGoalG),
+    calorieGoalType: user.calorieGoalType,
+    calorieGoalValue: user.calorieGoalValue == null ? '' : String(user.calorieGoalValue),
+    timezone: user.timezone ?? 'America/New_York',
+  };
+}
+
 function SettingsPage({ user, setUser }: { user: User; setUser: (user: User) => void }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState('');
+  const [settingsForm, setSettingsForm] = useState(() => getSettingsForm(user));
+  const [savingSettings, setSavingSettings] = useState(false);
+  const savedSettingsForm = useMemo(() => getSettingsForm(user), [user]);
+  const settingsChanged = useMemo(
+    () => JSON.stringify(settingsForm) !== JSON.stringify(savedSettingsForm),
+    [settingsForm, savedSettingsForm],
+  );
+
+  useEffect(() => {
+    setSettingsForm(getSettingsForm(user));
+  }, [user]);
+
+  const updateSettingsField = (field: keyof SettingsForm, value: string) => {
+    setSettingsForm((current) => ({ ...current, [field]: value }));
+  };
+
   return (
     <section>
       <Header title="Settings" icon={<Settings />} />
       <Panel title="User Settings">
         <form onSubmit={async (event) => {
           event.preventDefault();
-          const form = new FormData(event.currentTarget);
-          const res = await api<{ user: User }>('/me/settings', { method: 'PUT', body: JSON.stringify({
-            firstName: form.get('firstName'),
-            lastName: form.get('lastName'),
-            proteinGoalG: numberValue(form.get('proteinGoalG')),
-            calorieGoalValue: numberValue(form.get('calorieGoalValue')),
-            calorieGoalType: form.get('calorieGoalType'),
-            preferredWeightUnit: form.get('preferredWeightUnit'),
-            timezone: form.get('timezone'),
-          }) });
-          setUser(res.user);
+          if (!settingsChanged || savingSettings) return;
+          setSavingSettings(true);
+          try {
+            const res = await api<{ user: User }>('/me/settings', { method: 'PUT', body: JSON.stringify({
+              firstName: settingsForm.firstName,
+              lastName: settingsForm.lastName,
+              proteinGoalG: numberValue(settingsForm.proteinGoalG),
+              calorieGoalValue: numberValue(settingsForm.calorieGoalValue),
+              calorieGoalType: settingsForm.calorieGoalType,
+              preferredWeightUnit: settingsForm.preferredWeightUnit,
+              timezone: settingsForm.timezone,
+            }) });
+            setUser(res.user);
+          } finally {
+            setSavingSettings(false);
+          }
         }}>
           <div className="settings-row">
             <label className="field">
               <span>First name</span>
-              <input name="firstName" defaultValue={user.firstName ?? ''} placeholder="First" />
+              <input name="firstName" value={settingsForm.firstName} onChange={(event) => updateSettingsField('firstName', event.target.value)} placeholder="First" />
             </label>
             <label className="field">
               <span>Last name</span>
-              <input name="lastName" defaultValue={user.lastName ?? ''} placeholder="Last" />
+              <input name="lastName" value={settingsForm.lastName} onChange={(event) => updateSettingsField('lastName', event.target.value)} placeholder="Last" />
             </label>
           </div>
           <div className="settings-row">
             <label className="field">
               <span>Preferred unit of measure for weight</span>
-              <select name="preferredWeightUnit" defaultValue={user.preferredWeightUnit}><option>lb</option><option>kg</option></select>
+              <select name="preferredWeightUnit" value={settingsForm.preferredWeightUnit} onChange={(event) => updateSettingsField('preferredWeightUnit', event.target.value)}><option>lb</option><option>kg</option></select>
             </label>
             <label className="field">
               <span>Protein Goal in grams</span>
-              <input name="proteinGoalG" type="number" step="1" defaultValue={user.proteinGoalG ?? ''} placeholder="160" />
+              <input name="proteinGoalG" type="number" step="1" value={settingsForm.proteinGoalG} onChange={(event) => updateSettingsField('proteinGoalG', event.target.value)} placeholder="160" />
             </label>
           </div>
           <div className="settings-row">
             <label className="field">
               <span>Calorie Goal Type</span>
-              <select name="calorieGoalType" defaultValue={user.calorieGoalType}>
+              <select name="calorieGoalType" value={settingsForm.calorieGoalType} onChange={(event) => updateSettingsField('calorieGoalType', event.target.value)}>
                 <option value="manual">Manual</option>
                 <option value="goal-based">Goal-Based</option>
               </select>
             </label>
             <label className="field">
               <span>Calorie Goal Value</span>
-              <input name="calorieGoalValue" type="number" step="1" defaultValue={user.calorieGoalValue ?? ''} placeholder="2000" />
+              <input name="calorieGoalValue" type="number" step="1" value={settingsForm.calorieGoalValue} onChange={(event) => updateSettingsField('calorieGoalValue', event.target.value)} placeholder="2000" />
             </label>
           </div>
           <label className="field">
             <span>User timezone</span>
-            <select name="timezone" defaultValue={user.timezone ?? 'America/New_York'}>
+            <select name="timezone" value={settingsForm.timezone} onChange={(event) => updateSettingsField('timezone', event.target.value)}>
               {timezones.map((timezone) => <option key={timezone} value={timezone}>{timezone}</option>)}
             </select>
           </label>
-          <button><Settings size={16} /> Save settings</button>
+          <button disabled={!settingsChanged || savingSettings}><Settings size={16} /> {settingsChanged ? savingSettings ? 'Saving...' : 'Save settings' : 'Saved'}</button>
         </form>
       </Panel>
       <Panel title="Danger Zone">
