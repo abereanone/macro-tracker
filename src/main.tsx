@@ -20,6 +20,7 @@ type Food = {
   description: string;
   servingQuantity: number;
   servingUnit: string;
+  servingGrams: number | null;
   proteinG: number;
   fatG: number;
   carbohydrateG: number;
@@ -169,6 +170,7 @@ function Dashboard({ user }: { user: User }) {
   const [foodSearch, setFoodSearch] = useState('');
   const [selectedFood, setSelectedFood] = useState<Food | null>(null);
   const [foodQuantity, setFoodQuantity] = useState('');
+  const [foodQuantityUnit, setFoodQuantityUnit] = useState('g');
   const [addingFood, setAddingFood] = useState(false);
   const [activeGoal, setActiveGoal] = useState<any>(null);
   const [popupMessage, setPopupMessage] = useState('');
@@ -196,6 +198,8 @@ function Dashboard({ user }: { user: User }) {
 
   const totals = day?.totals;
   const canAddFood = Boolean(selectedFood && Number(foodQuantity) > 0 && !addingFood);
+  const quantityUnitOptions = ['g', 'oz', 'lb', 'kg'];
+  if (selectedFood && !quantityUnitOptions.includes(selectedFood.servingUnit)) quantityUnitOptions.push(selectedFood.servingUnit);
   return (
     <section>
       {popupMessage && (
@@ -258,18 +262,19 @@ function Dashboard({ user }: { user: User }) {
                   method: 'POST',
                   body: JSON.stringify({
                     foodId: selectedFood.id,
-                    eatenDate: date,
-                    mealLabel,
-                    quantity: Number(foodQuantity),
-                    quantityUnit: selectedFood.servingUnit,
-                  }),
-                });
-                setPopupMessage(`${selectedFood.description} added for ${date} and ${mealLabel}`);
-                setSelectedFood(null);
-                setFoodSearch('');
-                setFoods([]);
-                setFoodQuantity('');
-                load();
+                  eatenDate: date,
+                  mealLabel,
+                  quantity: Number(foodQuantity),
+                  quantityUnit: foodQuantityUnit,
+                }),
+              });
+              setPopupMessage(`${selectedFood.description} added for ${date} and ${mealLabel}`);
+              setSelectedFood(null);
+              setFoodSearch('');
+              setFoods([]);
+              setFoodQuantity('');
+              setFoodQuantityUnit('g');
+              load();
               } finally {
                 setAddingFood(false);
               }
@@ -296,6 +301,7 @@ function Dashboard({ user }: { user: User }) {
                       onClick={() => {
                         setSelectedFood(food);
                         setFoodSearch(food.description);
+                        setFoodQuantityUnit(food.servingUnit);
                         setFoods([]);
                       }}
                     >
@@ -309,8 +315,11 @@ function Dashboard({ user }: { user: User }) {
             </div>
             <div className="row">
               <input name="quantity" type="number" step="0.01" placeholder="Qty" value={foodQuantity} onChange={(event) => setFoodQuantity(event.target.value)} required />
-              <div className="fixed-value" aria-label="Unit of measure">{selectedFood?.servingUnit ?? '-'}</div>
+              <select name="quantityUnit" value={foodQuantityUnit} onChange={(event) => setFoodQuantityUnit(event.target.value)} aria-label="Quantity unit">
+                {quantityUnitOptions.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+              </select>
             </div>
+            {selectedFood && <small>Food serving: {selectedFood.servingQuantity}{selectedFood.servingUnit}</small>}
             <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
             <button disabled={!canAddFood}><Plus size={16} /> {addingFood ? 'Adding...' : 'Add food'}</button>
           </form>
@@ -407,6 +416,7 @@ function FoodForm({ food, onSave, onCancel }: { food: Food | null; onSave: (food
   const [description, setDescription] = useState('');
   const [servingQuantity, setServingQuantity] = useState('');
   const [servingUnit, setServingUnit] = useState('g');
+  const [servingGrams, setServingGrams] = useState('');
   const [visibility, setVisibility] = useState<'public' | 'private'>('public');
   const [macros, setMacros] = useState({ proteinG: 0, fatG: 0, carbohydrateG: 0 });
   const [calories, setCalories] = useState('');
@@ -415,11 +425,13 @@ function FoodForm({ food, onSave, onCancel }: { food: Food | null; onSave: (food
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const calculatedCalories = Math.round(macros.proteinG * 4 + macros.fatG * 9 + macros.carbohydrateG * 4);
+  const servingGramsRequired = !['g', 'oz', 'lb', 'kg'].includes(servingUnit);
 
   useEffect(() => {
     setDescription(food?.description ?? '');
     setServingQuantity(food ? String(food.servingQuantity) : '');
     setServingUnit(food?.servingUnit ?? 'g');
+    setServingGrams(food?.servingGrams ? String(food.servingGrams) : '');
     setVisibility(food?.visibility ?? 'public');
     setMacros({
       proteinG: food?.proteinG ?? 0,
@@ -451,7 +463,7 @@ function FoodForm({ food, onSave, onCancel }: { food: Food | null; onSave: (food
     try {
       const isUpdate = Boolean(food?.id);
       const result = await api<{ food: Food }>(isUpdate ? `/foods/${food!.id}` : '/foods', { method: isUpdate ? 'PUT' : 'POST', body: JSON.stringify({
-        description, servingQuantity: Number(servingQuantity), servingUnit,
+        description, servingQuantity: Number(servingQuantity), servingUnit, servingGrams: servingGrams ? Number(servingGrams) : null,
         proteinG: macros.proteinG, fatG: macros.fatG, carbohydrateG: macros.carbohydrateG,
         calories: caloriesToSave, visibility,
       }) });
@@ -481,6 +493,10 @@ function FoodForm({ food, onSave, onCancel }: { food: Food | null; onSave: (food
         setError('Calories must be greater than or equal to zero.');
         return;
       }
+      if (servingGramsRequired && !servingGrams) {
+        setError('Serving grams is required for this unit.');
+        return;
+      }
       const difference = Math.abs(enteredCalories - calculatedCalories);
       const outsideTolerance = calculatedCalories > 0 ? difference / calculatedCalories > 0.1 : difference > 0;
       if (outsideTolerance) {
@@ -503,12 +519,18 @@ function FoodForm({ food, onSave, onCancel }: { food: Food | null; onSave: (food
           <select name="servingUnit" value={servingUnit} onChange={(event) => setServingUnit(event.target.value)} required>
             <option value="g">g</option>
             <option value="oz">oz</option>
+            <option value="lb">lb</option>
+            <option value="kg">kg</option>
             <option value="tbsp">tbsp</option>
             <option value="unit">unit</option>
             <option value="package">package</option>
           </select>
         </label>
       </div>
+      <label className="field">
+        <span>Serving grams</span>
+        <input name="servingGrams" type="number" step="0.01" placeholder={servingGramsRequired ? 'Required' : 'Auto for mass units'} value={servingGrams} onChange={(event) => setServingGrams(event.target.value)} required={servingGramsRequired} />
+      </label>
       <div className="quad">
         <label className="field">
           <span>Protein grams</span>
@@ -577,13 +599,11 @@ function FoodRow({ food, mine, reload, onCopy, onModify }: { food: Food; mine: b
 
 function SavedMeals({ user }: { user: User }) {
   const [meals, setMeals] = useState<SavedMeal[]>([]);
-  const [foods, setFoods] = useState<Food[]>([]);
   const [scope, setScope] = useState('all');
   const [search, setSearch] = useState('');
   const [editingMeal, setEditingMeal] = useState<SavedMeal | null>(null);
   const load = () => {
     api<{ meals: SavedMeal[] }>(`/saved-meals?scope=${scope}&search=${encodeURIComponent(search)}`).then((res) => setMeals(res.meals));
-    api<{ foods: Food[] }>('/foods?scope=all').then((res) => setFoods(res.foods));
   };
   useEffect(load, [scope, search]);
   async function handleMealSaved() {
@@ -596,7 +616,7 @@ function SavedMeals({ user }: { user: User }) {
     <section>
       <Header title="Saved Meals" icon={<ChefHat />} />
       <SearchTools scope={scope} setScope={setScope} search={search} setSearch={setSearch} />
-      <Panel title={editingMeal ? 'Modify Meal' : 'Create Meal'}><MealForm meal={editingMeal} foods={foods} onSave={handleMealSaved} onCancel={() => setEditingMeal(null)} /></Panel>
+      <Panel title={editingMeal ? 'Modify Meal' : 'Create Meal'}><MealForm meal={editingMeal} onSave={handleMealSaved} onCancel={() => setEditingMeal(null)} /></Panel>
       <Panel title="Meal List">
         <div className="list">{meals.map((meal) => (
           <div className="list-row" key={meal.id}>
@@ -612,7 +632,7 @@ function SavedMeals({ user }: { user: User }) {
   );
 }
 
-function MealForm({ meal, foods, onSave, onCancel }: { meal: SavedMeal | null; foods: Food[]; onSave: () => Promise<void>; onCancel?: () => void }) {
+function MealForm({ meal, onSave, onCancel }: { meal: SavedMeal | null; onSave: () => Promise<void>; onCancel?: () => void }) {
   const [items, setItems] = useState<MealItem[]>([{ foodId: '', quantity: 1, quantityUnit: 'g' }]);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -629,9 +649,9 @@ function MealForm({ meal, foods, onSave, onCancel }: { meal: SavedMeal | null; f
       setName('');
       setDescription('');
       setVisibility('private');
-      setItems([{ foodId: foods[0]?.id ?? '', quantity: 1, quantityUnit: foods[0]?.servingUnit ?? 'g' }]);
+      setItems([{ foodId: '', quantity: 1, quantityUnit: 'g' }]);
     }
-  }, [meal, foods]);
+  }, [meal]);
 
   function updateItem(index: number, patch: Partial<MealItem>) {
     setItems((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)));
@@ -657,7 +677,7 @@ function MealForm({ meal, foods, onSave, onCancel }: { meal: SavedMeal | null; f
           setName('');
           setDescription('');
           setVisibility('private');
-          setItems([{ foodId: foods[0]?.id ?? '', quantity: 1, quantityUnit: foods[0]?.servingUnit ?? 'g' }]);
+          setItems([{ foodId: '', quantity: 1, quantityUnit: 'g' }]);
         }
         await onSave();
       } finally {
@@ -669,20 +689,16 @@ function MealForm({ meal, foods, onSave, onCancel }: { meal: SavedMeal | null; f
       <div className="meal-items">
         {items.map((item, index) => (
           <div className="meal-item" key={index}>
-            <select value={item.foodId} required onChange={(event) => {
-              const food = foods.find((candidate) => candidate.id === event.target.value);
-              updateItem(index, { foodId: event.target.value, quantityUnit: food?.servingUnit ?? item.quantityUnit });
-            }}>
-              <option value="">Select a food</option>
-              {foods.map((food) => <option key={food.id} value={food.id}>{food.description}</option>)}
-            </select>
+            <MealFoodPicker item={item} onChange={(patch) => updateItem(index, patch)} />
             <input value={item.quantity} type="number" step="0.01" placeholder="Qty" required onChange={(event) => updateItem(index, { quantity: Number(event.target.value) })} />
-            <input value={item.quantityUnit} placeholder="Unit" required onChange={(event) => updateItem(index, { quantityUnit: event.target.value })} />
+            <select value={item.quantityUnit} required onChange={(event) => updateItem(index, { quantityUnit: event.target.value })} aria-label="Quantity unit">
+              {quantityUnitOptions(item.quantityUnit).map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+            </select>
             <button type="button" className="ghost" onClick={() => setItems((current) => current.filter((_, itemIndex) => itemIndex !== index))} disabled={items.length === 1}>Remove</button>
           </div>
         ))}
       </div>
-      <button type="button" className="ghost" onClick={() => setItems((current) => [...current, { foodId: foods[0]?.id ?? '', quantity: 1, quantityUnit: foods[0]?.servingUnit ?? 'g' }])}>Add item</button>
+      <button type="button" className="ghost" onClick={() => setItems((current) => [...current, { foodId: '', quantity: 1, quantityUnit: 'g' }])}>Add item</button>
       <select name="visibility" value={visibility} onChange={(event) => setVisibility(event.target.value as 'private' | 'public')}><option value="private">Private</option><option value="public">Public</option></select>
       <div className="form-actions">
         <button><Plus size={16} /> {meal ? 'Update meal' : 'Create meal'}</button>
@@ -690,6 +706,70 @@ function MealForm({ meal, foods, onSave, onCancel }: { meal: SavedMeal | null; f
       </div>
     </form>
   );
+}
+
+function MealFoodPicker({ item, onChange }: { item: MealItem; onChange: (patch: Partial<MealItem>) => void }) {
+  const [search, setSearch] = useState(item.foodDescription ?? '');
+  const [results, setResults] = useState<Food[]>([]);
+
+  useEffect(() => {
+    setSearch(item.foodDescription ?? '');
+  }, [item.foodId, item.foodDescription]);
+
+  useEffect(() => {
+    const query = search.trim();
+    if (!query || query === item.foodDescription) {
+      setResults([]);
+      return;
+    }
+    let ignore = false;
+    api<{ foods: Food[] }>(`/foods?scope=all&search=${encodeURIComponent(query)}`).then((res) => {
+      if (!ignore) setResults(res.foods);
+    });
+    return () => {
+      ignore = true;
+    };
+  }, [search, item.foodDescription]);
+
+  return (
+    <div className="food-search meal-food-search">
+      <input
+        placeholder="Search food"
+        value={search}
+        onChange={(event) => {
+          setSearch(event.target.value);
+          onChange({ foodId: '', foodDescription: '' });
+        }}
+        autoComplete="off"
+        required
+      />
+      {results.length > 0 && (
+        <div className="food-results">
+          {results.map((food) => (
+            <button
+              key={food.id}
+              type="button"
+              className="ghost"
+              onClick={() => {
+                setSearch(food.description);
+                setResults([]);
+                onChange({ foodId: food.id, foodDescription: food.description, quantityUnit: food.servingUnit });
+              }}
+            >
+              <span>{food.description}</span>
+              <small>{food.servingQuantity}{food.servingUnit} - {food.proteinG}P {food.fatG}F {food.carbohydrateG}C</small>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function quantityUnitOptions(currentUnit: string) {
+  const units = ['g', 'oz', 'lb', 'kg'];
+  if (currentUnit && !units.includes(currentUnit)) units.push(currentUnit);
+  return units;
 }
 
 function History() {

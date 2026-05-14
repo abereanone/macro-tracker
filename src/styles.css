@@ -175,7 +175,8 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
 .form-actions, .row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row-actions { justify-content: flex-end; }
 .meal-items { display: grid; gap: 10px; }
-.meal-item { display: grid; grid-template-columns: minmax(0, 1fr) 90px 90px auto; gap: 10px; }
+.meal-item { display: grid; grid-template-columns: minmax(220px, 1fr) 90px 90px auto; gap: 10px; align-items: start; }
+.meal-food-search .food-results { max-height: 220px; }
 .list { display: grid; gap: 8px; }
 .list.compact { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
 .list-row, .table-row {
@@ -240,6 +241,7 @@ small { display: block; color: #63716b; margin-top: 4px; }
   .metric-grid, .quad { grid-template-columns: 1fr 1fr; }
   .two-col { grid-template-columns: 1fr; }
   .meal-item { grid-template-columns: 1fr 1fr; }
+  .meal-food-search { grid-column: 1 / -1; }
   .toolbar { flex-wrap: wrap; }
   .list-row { grid-template-columns: 1fr; }
   .diary-weight { grid-template-columns: 1fr; }
@@ -254,6 +256,7 @@ small { display: block; color: #63716b; margin-top: 4px; }
   .metric { padding: 10px; min-height: 74px; }
   .metric strong { font-size: 22px; }
   .quad, .row, .serving-row, .meal-item { grid-template-columns: 1fr 1fr; }
+  .meal-food-search { grid-column: 1 / -1; }
   .two-col { grid-template-columns: 1fr; }
   .compact-form { grid-template-columns: 1fr 80px; }
   .compact-form button { grid-column: 1 / -1; }

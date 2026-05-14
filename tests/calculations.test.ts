@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculateGoalTarget, calculateLoggedNutrition, calculateTotals, estimateMaintenanceCalories, toLb } from '../src/shared/calculations';
+import { calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantity, convertQuantityToGrams, estimateMaintenanceCalories, toLb } from '../src/shared/calculations';
 
 describe('nutrition calculations', () => {
   it('scales logged nutrients proportionally', () => {
@@ -9,6 +9,23 @@ describe('nutrition calculations', () => {
         150,
       ),
     ).toEqual({ proteinG: 46.5, fatG: 5.4, carbohydrateG: 0, calories: 247.5 });
+  });
+
+  it('converts ounces to grams before scaling logged nutrients', () => {
+    const consumedGrams = convertQuantity(16, 'oz', 'g');
+    expect(consumedGrams).toBeCloseTo(453.59237);
+    expect(
+      calculateLoggedNutrition(
+        { servingQuantity: 100, proteinG: 20, fatG: 10, carbohydrateG: 0, calories: 170 },
+        consumedGrams,
+      ),
+    ).toEqual({ proteinG: 90.72, fatG: 45.36, carbohydrateG: 0, calories: 771.11 });
+  });
+
+  it('uses food-specific serving grams for package and unit conversions', () => {
+    const food = { servingQuantity: 1, servingUnit: 'package', servingGrams: 250, proteinG: 10, fatG: 5, carbohydrateG: 20, calories: 165 };
+    expect(convertQuantityToGrams(2, 'package', food)).toBe(500);
+    expect(convertConsumedQuantityToServingQuantity(food, 125, 'g')).toBe(0.5);
   });
 
   it('uses macro calories for macro percentages', () => {

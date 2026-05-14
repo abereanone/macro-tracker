@@ -2,6 +2,8 @@ import type { FoodNutrition, Nutrients, Totals, WeightPoint, WeightUnit } from '
 
 export const KG_TO_LB = 2.2046226218;
 export const LB_TO_KG = 0.45359237;
+export const OZ_TO_G = 28.349523125;
+export const LB_TO_G = 453.59237;
 export const CALORIES_PER_POUND = 3500;
 
 export function round(value: number, places = 1): number {
@@ -32,6 +34,84 @@ export function calculateLoggedNutrition(food: FoodNutrition, consumedQuantity: 
     carbohydrateG: round(food.carbohydrateG * ratio, 2),
     calories: round(food.calories * ratio, 2),
   };
+}
+
+export function convertQuantity(quantity: number, fromUnit: string, toUnit: string): number {
+  if (quantity <= 0) {
+    throw new Error('Quantity must be greater than zero.');
+  }
+
+  const from = normalizeFoodUnit(fromUnit);
+  const to = normalizeFoodUnit(toUnit);
+  if (from === to) return quantity;
+
+  const fromGrams = gramsPerUnit(from);
+  const toGrams = gramsPerUnit(to);
+  if (!fromGrams || !toGrams) {
+    throw new Error(`Cannot convert from ${fromUnit} to ${toUnit}.`);
+  }
+
+  return (quantity * fromGrams) / toGrams;
+}
+
+export function convertConsumedQuantityToServingQuantity(food: FoodNutrition, quantity: number, quantityUnit: string): number {
+  if (quantity <= 0) {
+    throw new Error('Quantity must be greater than zero.');
+  }
+  if (!food.servingUnit) return quantity;
+
+  const consumedUnit = normalizeFoodUnit(quantityUnit);
+  const servingUnit = normalizeFoodUnit(food.servingUnit);
+  if (consumedUnit === servingUnit) return quantity;
+
+  const consumedGrams = convertQuantityToGrams(quantity, consumedUnit, food);
+  const gramsPerServingUnit = gramsPerFoodServingUnit(food);
+  if (!gramsPerServingUnit) {
+    throw new Error(`Cannot convert from ${quantityUnit} to ${food.servingUnit} without serving grams.`);
+  }
+
+  return consumedGrams / gramsPerServingUnit;
+}
+
+export function convertQuantityToGrams(quantity: number, unit: string, food?: FoodNutrition): number {
+  if (quantity <= 0) {
+    throw new Error('Quantity must be greater than zero.');
+  }
+
+  const normalized = normalizeFoodUnit(unit);
+  const unitGrams = gramsPerUnit(normalized);
+  if (unitGrams) return quantity * unitGrams;
+
+  if (food?.servingUnit && normalizeFoodUnit(food.servingUnit) === normalized) {
+    const gramsPerServingUnit = gramsPerFoodServingUnit(food);
+    if (gramsPerServingUnit) return quantity * gramsPerServingUnit;
+  }
+
+  throw new Error(`Cannot convert ${unit} to grams without serving grams.`);
+}
+
+export function gramsPerFoodServingUnit(food: FoodNutrition): number | null {
+  if (food.servingGrams && food.servingGrams > 0) return food.servingGrams / food.servingQuantity;
+  if (!food.servingUnit) return null;
+  const unitGrams = gramsPerUnit(normalizeFoodUnit(food.servingUnit));
+  return unitGrams;
+}
+
+function normalizeFoodUnit(unit: string): string {
+  const normalized = unit.trim().toLowerCase();
+  if (['gram', 'grams'].includes(normalized)) return 'g';
+  if (['ounce', 'ounces'].includes(normalized)) return 'oz';
+  if (['pound', 'pounds', 'lbs'].includes(normalized)) return 'lb';
+  if (['kilogram', 'kilograms'].includes(normalized)) return 'kg';
+  return normalized;
+}
+
+function gramsPerUnit(unit: string): number | null {
+  if (unit === 'g') return 1;
+  if (unit === 'oz') return OZ_TO_G;
+  if (unit === 'lb') return LB_TO_G;
+  if (unit === 'kg') return 1000;
+  return null;
 }
 
 export function calculateTotals(items: Nutrients[]): Totals {

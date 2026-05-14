@@ -1,4 +1,4 @@
-import { calculateGoalTarget, calculateLoggedNutrition, calculateTotals, estimateMaintenanceCalories, toLb } from '../../src/shared/calculations';
+import { calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, toLb } from '../../src/shared/calculations';
 import {
   nonNegativeNumber,
   normalizeEmail,
@@ -30,6 +30,7 @@ type DbFood = {
   description: string;
   serving_quantity: number;
   serving_unit: string;
+  serving_grams: number | null;
   protein_g: number;
   fat_g: number;
   carbohydrate_g: number;
@@ -227,6 +228,7 @@ function mapFood(food: DbFood) {
     description: food.description,
     servingQuantity: food.serving_quantity,
     servingUnit: food.serving_unit,
+    servingGrams: food.serving_grams,
     proteinG: food.protein_g,
     fatG: food.fat_g,
     carbohydrateG: food.carbohydrate_g,
@@ -241,6 +243,7 @@ function foodInput(input: Record<string, unknown>) {
     description: requireString(input.description, 'Description'),
     servingQuantity: positiveNumber(input.servingQuantity, 'Serving quantity'),
     servingUnit: requireString(input.servingUnit, 'Serving unit'),
+    servingGrams: optionalPositiveNumber(input.servingGrams, 'Serving grams'),
     proteinG: nonNegativeNumber(input.proteinG, 'Protein'),
     fatG: nonNegativeNumber(input.fatG, 'Fat'),
     carbohydrateG: nonNegativeNumber(input.carbohydrateG, 'Carbohydrates'),
@@ -248,6 +251,20 @@ function foodInput(input: Record<string, unknown>) {
     visibility: requireVisibility(input.visibility ?? 'private'),
     notes: optionalString(input.notes),
   };
+}
+
+function defaultServingGrams(servingQuantity: number, servingUnit: string) {
+  try {
+    return convertQuantityToGrams(servingQuantity, servingUnit);
+  } catch {
+    return null;
+  }
+}
+
+function requireServingGrams(servingQuantity: number, servingUnit: string, servingGrams: number | null) {
+  const resolved = servingGrams ?? defaultServingGrams(servingQuantity, servingUnit);
+  if (!resolved) throw new ApiError('VALIDATION_ERROR', 'Serving grams is required for this unit.');
+  return resolved;
 }
 
 async function visibleFood(ctx: Ctx, user: DbUser, foodId: string) {
@@ -321,13 +338,14 @@ function escapeLike(value: string) {
 
 async function createFood(ctx: Ctx, user: DbUser) {
   const data = foodInput(await body(ctx));
+  const servingGrams = requireServingGrams(data.servingQuantity, data.servingUnit, data.servingGrams);
   await assertUniqueFoodDescription(ctx, user, data.description);
   const foodId = id();
   await ctx.env.DB.prepare(
-    `INSERT INTO foods (id, owner_user_id, description, serving_quantity, serving_unit, protein_g, fat_g, carbohydrate_g, calories, visibility, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO foods (id, owner_user_id, description, serving_quantity, serving_unit, serving_grams, protein_g, fat_g, carbohydrate_g, calories, visibility, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(foodId, user.id, data.description, data.servingQuantity, data.servingUnit, data.proteinG, data.fatG, data.carbohydrateG, data.calories, data.visibility, data.notes)
+    .bind(foodId, user.id, data.description, data.servingQuantity, data.servingUnit, servingGrams, data.proteinG, data.fatG, data.carbohydrateG, data.calories, data.visibility, data.notes)
     .run();
   return json({ ok: true, food: mapFood((await ownFood(ctx, user, foodId))!) });
 }
@@ -335,11 +353,12 @@ async function createFood(ctx: Ctx, user: DbUser) {
 async function updateFood(ctx: Ctx, user: DbUser, foodId: string) {
   await ownFood(ctx, user, foodId);
   const data = foodInput(await body(ctx));
+  const servingGrams = requireServingGrams(data.servingQuantity, data.servingUnit, data.servingGrams);
   await assertUniqueFoodDescription(ctx, user, data.description, foodId);
   await ctx.env.DB.prepare(
-    `UPDATE foods SET description = ?, serving_quantity = ?, serving_unit = ?, protein_g = ?, fat_g = ?, carbohydrate_g = ?, calories = ?, visibility = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?`,
+    `UPDATE foods SET description = ?, serving_quantity = ?, serving_unit = ?, serving_grams = ?, protein_g = ?, fat_g = ?, carbohydrate_g = ?, calories = ?, visibility = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?`,
   )
-    .bind(data.description, data.servingQuantity, data.servingUnit, data.proteinG, data.fatG, data.carbohydrateG, data.calories, data.visibility, data.notes, foodId, user.id)
+    .bind(data.description, data.servingQuantity, data.servingUnit, servingGrams, data.proteinG, data.fatG, data.carbohydrateG, data.calories, data.visibility, data.notes, foodId, user.id)
     .run();
   return json({ ok: true, food: mapFood(await ownFood(ctx, user, foodId)) });
 }
@@ -357,11 +376,12 @@ async function copyFood(ctx: Ctx, user: DbUser, foodId: string) {
   const input: Record<string, unknown> = await body(ctx).catch(() => ({}));
   const visibility = input.visibility ? requireVisibility(input.visibility) : 'private';
   const newId = id();
+  const servingGrams = source.serving_grams ?? defaultServingGrams(source.serving_quantity, source.serving_unit);
   await ctx.env.DB.prepare(
-    `INSERT INTO foods (id, owner_user_id, description, serving_quantity, serving_unit, protein_g, fat_g, carbohydrate_g, calories, visibility, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO foods (id, owner_user_id, description, serving_quantity, serving_unit, serving_grams, protein_g, fat_g, carbohydrate_g, calories, visibility, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(newId, user.id, source.description, source.serving_quantity, source.serving_unit, source.protein_g, source.fat_g, source.carbohydrate_g, source.calories, visibility, source.notes)
+    .bind(newId, user.id, source.description, source.serving_quantity, source.serving_unit, servingGrams, source.protein_g, source.fat_g, source.carbohydrate_g, source.calories, visibility, source.notes)
     .run();
   return json({ ok: true, food: mapFood(await ownFood(ctx, user, newId)) });
 }
@@ -511,6 +531,11 @@ function diaryPayload(input: Record<string, unknown>) {
 }
 
 async function insertDiary(ctx: Ctx, user: DbUser, food: DbFood, data: { eatenDate: string; mealLabel: string | null; quantity: number; quantityUnit: string; notes?: string | null }, sourceMealId: string | null = null) {
+  const servingQuantity = convertConsumedQuantityToServingQuantity(
+    { servingQuantity: food.serving_quantity, servingUnit: food.serving_unit, servingGrams: food.serving_grams, proteinG: food.protein_g, fatG: food.fat_g, carbohydrateG: food.carbohydrate_g, calories: food.calories },
+    data.quantity,
+    data.quantityUnit,
+  );
   const nutrients = calculateLoggedNutrition(
     {
       servingQuantity: food.serving_quantity,
@@ -519,7 +544,7 @@ async function insertDiary(ctx: Ctx, user: DbUser, food: DbFood, data: { eatenDa
       carbohydrateG: food.carbohydrate_g,
       calories: food.calories,
     },
-    data.quantity,
+    servingQuantity,
   );
   const diaryId = id();
   await ctx.env.DB.prepare(
@@ -552,9 +577,14 @@ async function updateDiaryItem(ctx: Ctx, user: DbUser, itemId: string) {
   const current = await diaryItem(ctx, user, itemId);
   const data = diaryPayload({ ...(await body(ctx)), foodId: String(current.food_id) });
   const food = await visibleFood(ctx, user, String(current.food_id));
+  const servingQuantity = convertConsumedQuantityToServingQuantity(
+    { servingQuantity: food.serving_quantity, servingUnit: food.serving_unit, servingGrams: food.serving_grams, proteinG: food.protein_g, fatG: food.fat_g, carbohydrateG: food.carbohydrate_g, calories: food.calories },
+    data.quantity,
+    data.quantityUnit,
+  );
   const nutrients = calculateLoggedNutrition(
     { servingQuantity: food.serving_quantity, proteinG: food.protein_g, fatG: food.fat_g, carbohydrateG: food.carbohydrate_g, calories: food.calories },
-    data.quantity,
+    servingQuantity,
   );
   await ctx.env.DB.prepare(
     `UPDATE diary_items SET eaten_date = ?, meal_label = ?, quantity = ?, quantity_unit = ?, protein_g = ?, fat_g = ?, carbohydrate_g = ?, calories = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`,

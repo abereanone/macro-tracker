@@ -10,6 +10,8 @@ export type Nutrients = {
 
 export type FoodNutrition = Nutrients & {
   servingQuantity: number;
+  servingUnit?: string;
+  servingGrams?: number | null;
 };
 
 export type Totals = Nutrients & {
