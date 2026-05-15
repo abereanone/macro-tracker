@@ -9,6 +9,7 @@
     "preview": "wrangler pages dev dist --d1 DB=macro_tracker",
     "test": "vitest run",
     "db:migrate": "wrangler d1 migrations apply macro_tracker --local",
+    "db:clone:remote": "node scripts/clone-remote-db.mjs",
     "foods:foundation:sql": "node scripts/generate-foundation-food-inserts.mjs FoodData_Central_foundation_food_json_2026-04-30.json --out foundation-food-inserts.sql"
   },
   "dependencies": {

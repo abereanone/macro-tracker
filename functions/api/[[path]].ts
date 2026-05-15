@@ -699,7 +699,7 @@ async function reportSummary(ctx: Ctx, user: DbUser, url: URL) {
   const end = requireDate(url.searchParams.get('end'), 'End date');
   const days = await ctx.env.DB.prepare(
     `SELECT eaten_date AS date, SUM(calories) AS calories, SUM(protein_g) AS proteinG, SUM(fat_g) AS fatG, SUM(carbohydrate_g) AS carbohydrateG, COUNT(*) AS itemCount
-     FROM diary_items WHERE user_id = ? AND eaten_date BETWEEN ? AND ? GROUP BY eaten_date ORDER BY eaten_date`,
+     FROM diary_items WHERE user_id = ? AND eaten_date BETWEEN ? AND ? GROUP BY eaten_date ORDER BY eaten_date DESC`,
   )
     .bind(user.id, start, end)
     .all();
@@ -712,33 +712,38 @@ async function reportSummary(ctx: Ctx, user: DbUser, url: URL) {
 async function reportMaintenance(ctx: Ctx, user: DbUser, url: URL) {
   const start = requireDate(url.searchParams.get('start'), 'Start date');
   const end = requireDate(url.searchParams.get('end'), 'End date');
-  const total = await ctx.env.DB.prepare('SELECT COALESCE(SUM(calories), 0) AS totalCalories FROM diary_items WHERE user_id = ? AND eaten_date BETWEEN ? AND ?')
-    .bind(user.id, start, end)
-    .first<{ totalCalories: number }>();
   const weights = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? AND entry_date BETWEEN ? AND ? ORDER BY entry_date')
     .bind(user.id, start, end)
     .all<DbWeight>();
   if (weights.results.length < 2) {
+    const selectedTotal = await ctx.env.DB.prepare('SELECT COALESCE(SUM(calories), 0) AS totalCalories FROM diary_items WHERE user_id = ? AND eaten_date BETWEEN ? AND ?')
+      .bind(user.id, start, end)
+      .first<{ totalCalories: number }>();
     return json({
       ok: true,
       canCalculate: false,
       start,
       end,
-      totalCalories: Number(total?.totalCalories ?? 0),
+      totalCalories: Number(selectedTotal?.totalCalories ?? 0),
       weightEntryCount: weights.results.length,
       message: 'At least two weight entries are required in the selected range.',
     });
   }
   const startWeight = mapWeightPoint(weights.results[0]);
   const endWeight = mapWeightPoint(weights.results[weights.results.length - 1]);
+  const total = await ctx.env.DB.prepare('SELECT COALESCE(SUM(calories), 0) AS totalCalories FROM diary_items WHERE user_id = ? AND eaten_date BETWEEN ? AND ?')
+    .bind(user.id, startWeight.date, endWeight.date)
+    .first<{ totalCalories: number }>();
   return json({
     ok: true,
     canCalculate: true,
-    start,
-    end,
+    start: startWeight.date,
+    end: endWeight.date,
+    requestedStart: start,
+    requestedEnd: end,
     startWeight,
     endWeight,
-    ...estimateMaintenanceCalories({ start, end, totalCalories: Number(total?.totalCalories ?? 0), startWeight, endWeight }),
+    ...estimateMaintenanceCalories({ start: startWeight.date, end: endWeight.date, totalCalories: Number(total?.totalCalories ?? 0), startWeight, endWeight }),
   });
 }
 
@@ -818,14 +823,22 @@ async function activeGoalPlan(ctx: Ctx, user: DbUser) {
 }
 
 async function maintenanceForRange(ctx: Ctx, user: DbUser, start: string, end: string) {
-  const total = await ctx.env.DB.prepare('SELECT COALESCE(SUM(calories), 0) AS totalCalories FROM diary_items WHERE user_id = ? AND eaten_date BETWEEN ? AND ?')
-    .bind(user.id, start, end)
-    .first<{ totalCalories: number }>();
   const weights = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? AND entry_date BETWEEN ? AND ? ORDER BY entry_date')
     .bind(user.id, start, end)
     .all<DbWeight>();
   if (weights.results.length < 2) return null;
   const startWeight = mapWeightPoint(weights.results[0]);
   const endWeight = mapWeightPoint(weights.results[weights.results.length - 1]);
-  return { start, end, startWeight, endWeight, ...estimateMaintenanceCalories({ start, end, totalCalories: Number(total?.totalCalories ?? 0), startWeight, endWeight }) };
+  const total = await ctx.env.DB.prepare('SELECT COALESCE(SUM(calories), 0) AS totalCalories FROM diary_items WHERE user_id = ? AND eaten_date BETWEEN ? AND ?')
+    .bind(user.id, startWeight.date, endWeight.date)
+    .first<{ totalCalories: number }>();
+  return {
+    start: startWeight.date,
+    end: endWeight.date,
+    requestedStart: start,
+    requestedEnd: end,
+    startWeight,
+    endWeight,
+    ...estimateMaintenanceCalories({ start: startWeight.date, end: endWeight.date, totalCalories: Number(total?.totalCalories ?? 0), startWeight, endWeight }),
+  };
 }
