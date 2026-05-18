@@ -5,7 +5,9 @@ import {
   BarChart3,
   CalendarDays,
   ChefHat,
+  KeyRound,
   LogOut,
+  Mail,
   Menu,
   Plus,
   Scale,
@@ -59,7 +61,6 @@ const routes = [
   "app",
   "foods",
   "saved-meals",
-  "history",
   "reports",
   "goals",
   "settings",
@@ -149,10 +150,17 @@ function App() {
     );
   }
 
-  async function login(email: string) {
-    const res = await api<{ ok: boolean; user: User }>("/auth/simple-login", {
+  async function requestLoginCode(email: string) {
+    await api<{ ok: boolean }>("/auth/request-code", {
       method: "POST",
       body: JSON.stringify({ email }),
+    });
+  }
+
+  async function verifyLoginCode(email: string, code: string) {
+    const res = await api<{ ok: boolean; user: User }>("/auth/verify-code", {
+      method: "POST",
+      body: JSON.stringify({ email, code }),
     });
     setUser(res.user);
     navigate("app");
@@ -165,16 +173,22 @@ function App() {
   }
 
   if (!user || route === "login")
-    return <Login onLogin={login} message={message} setMessage={setMessage} />;
+    return (
+      <Login
+        onRequestCode={requestLoginCode}
+        onVerifyCode={verifyLoginCode}
+        message={message}
+        setMessage={setMessage}
+      />
+    );
 
   const page = {
     app: <Dashboard user={user} />,
     foods: <Foods user={user} />,
     "saved-meals": <SavedMeals user={user} />,
-    history: <History />,
     reports: <Reports />,
     goals: <Goals />,
-    settings: <SettingsPage user={user} setUser={setUser} />,
+    settings: <SettingsPage user={user} setUser={setUser} onLogout={logout} />,
   }[route] ?? <Dashboard user={user} />;
 
   return (
@@ -214,12 +228,6 @@ function App() {
           <ChefHat size={18} /> Meals
         </button>
         <button
-          className={route === "history" ? "active" : ""}
-          onClick={() => navigate("history")}
-        >
-          <CalendarDays size={18} /> History
-        </button>
-        <button
           className={route === "reports" ? "active" : ""}
           onClick={() => navigate("reports")}
         >
@@ -237,9 +245,6 @@ function App() {
         >
           <Settings size={18} /> Settings
         </button>
-        <button onClick={logout}>
-          <LogOut size={18} /> Logout
-        </button>
         <span className="signed-in">{user.email}</span>
       </aside>
       <main>{page}</main>
@@ -248,42 +253,92 @@ function App() {
 }
 
 function Login({
-  onLogin,
+  onRequestCode,
+  onVerifyCode,
   message,
   setMessage,
 }: {
-  onLogin: (email: string) => Promise<void>;
+  onRequestCode: (email: string) => Promise<void>;
+  onVerifyCode: (email: string, code: string) => Promise<void>;
   message: string;
   setMessage: (message: string) => void;
 }) {
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
   return (
     <main className="login-page">
       <form
         className="login-panel"
         onSubmit={async (event) => {
           event.preventDefault();
-          const email = new FormData(event.currentTarget).get(
-            "email",
-          ) as string;
+          setSubmitting(true);
+          setMessage("");
           try {
-            await onLogin(email);
+            if (codeSent) {
+              await onVerifyCode(email, code);
+            } else {
+              await onRequestCode(email);
+              setCodeSent(true);
+            }
           } catch (err) {
             setMessage(err instanceof Error ? err.message : "Login failed.");
+          } finally {
+            setSubmitting(false);
           }
         }}
       >
         <h1>Macro Tracker</h1>
-        <p>
-          Version 1 treats this email as the current user. No password or magic
-          link is used yet.
-        </p>
+        <p>{codeSent ? `Enter the code sent to ${email}.` : "Enter your email to get a 6 digit login code."}</p>
         <input
           name="email"
           type="email"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
           placeholder="you@example.com"
+          disabled={codeSent || submitting}
           required
         />
-        <button type="submit">Continue</button>
+        {codeSent && (
+          <input
+            name="code"
+            value={code}
+            onChange={(event) =>
+              setCode(event.target.value.replace(/\D/g, "").slice(0, 6))
+            }
+            inputMode="numeric"
+            pattern="\d{6}"
+            autoComplete="one-time-code"
+            placeholder="123456"
+            required
+          />
+        )}
+        <button type="submit" disabled={submitting}>
+          {codeSent ? <KeyRound size={16} /> : <Mail size={16} />}
+          {submitting
+            ? codeSent
+              ? "Verifying..."
+              : "Sending..."
+            : codeSent
+              ? "Verify code"
+              : "Send code"}
+        </button>
+        {codeSent && (
+          <button
+            type="button"
+            className="ghost"
+            disabled={submitting}
+            onClick={() => {
+              setCodeSent(false);
+              setCode("");
+              setMessage("");
+            }}
+          >
+            Use a different email
+          </button>
+        )}
         {message && <p className="error-text">{message}</p>}
       </form>
     </main>
@@ -1399,24 +1454,6 @@ function quantityUnitOptions(currentUnit: string) {
   return units;
 }
 
-function History() {
-  const [start, setStart] = useState(() => daysAgo(13));
-  const [end, setEnd] = useState(today());
-  const [data, setData] = useState<any>(null);
-  useEffect(() => {
-    api(`/reports/summary?start=${start}&end=${end}`).then(setData);
-  }, [start, end]);
-  return (
-    <section>
-      <Header title="History" icon={<CalendarDays />} />
-      <DateRange start={start} end={end} setStart={setStart} setEnd={setEnd} />
-      <Panel title="Daily Totals">
-        <Table rows={data?.days ?? []} />
-      </Panel>
-    </section>
-  );
-}
-
 function Reports() {
   const [start, setStart] = useState(() => daysAgo(13));
   const [end, setEnd] = useState(today());
@@ -1630,9 +1667,11 @@ function getSettingsForm(user: User): SettingsForm {
 function SettingsPage({
   user,
   setUser,
+  onLogout,
 }: {
   user: User;
   setUser: (user: User) => void;
+  onLogout: () => void;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState("");
@@ -1824,6 +1863,11 @@ function SettingsPage({
           </div>
         )}
         {deleteMessage && <div className="notice success">{deleteMessage}</div>}
+      </Panel>
+      <Panel title="Account">
+        <button onClick={onLogout}>
+          <LogOut size={16} /> Logout
+        </button>
       </Panel>
     </section>
   );

@@ -1,4 +1,5 @@
 import { calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, toLb } from '../../src/shared/calculations';
+import { Resend } from 'resend';
 import {
   nonNegativeNumber,
   normalizeEmail,
@@ -11,7 +12,7 @@ import {
   requireWeightUnit,
 } from '../../src/shared/validation';
 
-type Env = { DB: D1Database };
+type Env = { DB: D1Database; RESEND_API_KEY: string };
 type Ctx = EventContext<Env, string, { path?: string[] }>;
 type DbUser = {
   id: string;
@@ -24,6 +25,7 @@ type DbUser = {
   preferred_weight_unit: string | null;
   timezone: string | null;
 };
+type DbSession = { user_id: string };
 type DbFood = {
   id: string;
   owner_user_id: string;
@@ -41,7 +43,10 @@ type DbFood = {
 type DbMeal = { id: string; owner_user_id: string; name: string; description: string | null; visibility: string };
 type DbWeight = { id: string; entry_date: string; weight_value: number; weight_unit: 'lb' | 'kg'; notes: string | null };
 
-const cookieName = 'macro_user_email';
+const sessionCookieName = 'macro_session';
+const loginCodeExpiresMs = 10 * 60 * 1000;
+const sessionExpiresMs = 30 * 24 * 60 * 60 * 1000;
+const maxLoginAttempts = 5;
 
 export const onRequest: PagesFunction<Env> = async (ctx) => {
   try {
@@ -51,8 +56,9 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     const method = ctx.request.method.toUpperCase();
 
     if (method === 'OPTIONS') return json({ ok: true });
-    if (method === 'POST' && path === '/auth/simple-login') return simpleLogin(ctx);
-    if (method === 'POST' && path === '/auth/logout') return logout();
+    if (method === 'POST' && path === '/auth/request-code') return requestLoginCode(ctx);
+    if (method === 'POST' && path === '/auth/verify-code') return verifyLoginCode(ctx);
+    if (method === 'POST' && path === '/auth/logout') return logout(ctx);
 
     const user = await requireUser(ctx);
 
@@ -124,6 +130,52 @@ function id() {
   return crypto.randomUUID();
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function futureIso(ms: number) {
+  return new Date(Date.now() + ms).toISOString();
+}
+
+function requireEmail(value: unknown) {
+  try {
+    return normalizeEmail(value);
+  } catch (err) {
+    throw new ApiError('VALIDATION_ERROR', err instanceof Error ? err.message : 'Enter a valid email address.');
+  }
+}
+
+function requireLoginCode(value: unknown) {
+  if (typeof value !== 'string') throw new ApiError('VALIDATION_ERROR', 'Enter the 6 digit code.');
+  const normalized = value.trim().replace(/\s+/g, '');
+  if (!/^\d{6}$/.test(normalized)) throw new ApiError('VALIDATION_ERROR', 'Enter the 6 digit code.');
+  return normalized;
+}
+
+function randomCode() {
+  const value = crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000;
+  return value.toString().padStart(6, '0');
+}
+
+function randomToken() {
+  return `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll('-', '');
+}
+
+async function sha256(value: string) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function sessionCookie(request: Request, value: string, maxAge: number) {
+  const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
+  return `${sessionCookieName}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+function clearSessionCookie() {
+  return `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+}
+
 function getCookie(request: Request, name: string) {
   const cookies = request.headers.get('cookie') ?? '';
   return cookies
@@ -134,30 +186,107 @@ function getCookie(request: Request, name: string) {
 }
 
 async function requireUser(ctx: Ctx) {
-  const email = getCookie(ctx.request, cookieName);
-  if (!email) throw new ApiError('UNAUTHORIZED', 'Log in with an email address first.', 401);
-  const user = await ctx.env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(decodeURIComponent(email)).first<DbUser>();
+  const token = getCookie(ctx.request, sessionCookieName);
+  if (!token) throw new ApiError('UNAUTHORIZED', 'Log in with an email code first.', 401);
+  const tokenHash = await sha256(token);
+  const session = await ctx.env.DB.prepare(
+    'SELECT user_id FROM auth_sessions WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?',
+  )
+    .bind(tokenHash, nowIso())
+    .first<DbSession>();
+  if (!session) throw new ApiError('UNAUTHORIZED', 'Log in with an email code first.', 401);
+  const user = await ctx.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(session.user_id).first<DbUser>();
   if (!user) throw new ApiError('UNAUTHORIZED', 'Log in with an email address first.', 401);
   return user;
 }
 
-async function simpleLogin(ctx: Ctx) {
+async function requestLoginCode(ctx: Ctx) {
   const input = await body(ctx);
-  const email = normalizeEmail(input.email);
+  const email = requireEmail(input.email);
+  const recent = await ctx.env.DB.prepare(
+    'SELECT created_at FROM auth_login_codes WHERE email = ? AND created_at > ? ORDER BY created_at DESC LIMIT 1',
+  )
+    .bind(email, new Date(Date.now() - 60_000).toISOString())
+    .first<{ created_at: string }>();
+  if (recent) throw new ApiError('RATE_LIMITED', 'Wait a minute before requesting another code.', 429);
+
+  const code = randomCode();
+  const codeHash = await sha256(`${email}:${code}`);
+  await ctx.env.DB.prepare(
+    'UPDATE auth_login_codes SET used_at = ? WHERE email = ? AND used_at IS NULL',
+  )
+    .bind(nowIso(), email)
+    .run();
+  await ctx.env.DB.prepare(
+    'INSERT INTO auth_login_codes (id, email, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)',
+  )
+    .bind(id(), email, codeHash, futureIso(loginCodeExpiresMs), nowIso())
+    .run();
+
+  const resend = new Resend(ctx.env.RESEND_API_KEY);
+  await resend.emails.send({
+    from: 'Macro Tracker <login@macros.michaelcoughlin.net>',
+    to: email,
+    subject: 'Your Macro Tracker login code',
+    text: `Your Macro Tracker login code is ${code}. It expires in 10 minutes.`,
+  });
+
+  return json({ ok: true });
+}
+
+async function verifyLoginCode(ctx: Ctx) {
+  const input = await body(ctx);
+  const email = requireEmail(input.email);
+  const code = requireLoginCode(input.code);
+  const codeHash = await sha256(`${email}:${code}`);
+  const challenge = await ctx.env.DB.prepare(
+    'SELECT id, attempt_count FROM auth_login_codes WHERE email = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1',
+  )
+    .bind(email, nowIso())
+    .first<{ id: string; attempt_count: number }>();
+  if (!challenge) throw new ApiError('UNAUTHORIZED', 'Request a new login code.', 401);
+  if (challenge.attempt_count >= maxLoginAttempts) {
+    throw new ApiError('UNAUTHORIZED', 'Too many attempts. Request a new login code.', 401);
+  }
+
+  const matched = await ctx.env.DB.prepare(
+    'SELECT id FROM auth_login_codes WHERE id = ? AND code_hash = ?',
+  )
+    .bind(challenge.id, codeHash)
+    .first<{ id: string }>();
+  if (!matched) {
+    await ctx.env.DB.prepare('UPDATE auth_login_codes SET attempt_count = attempt_count + 1 WHERE id = ?').bind(challenge.id).run();
+    throw new ApiError('UNAUTHORIZED', 'That code is not correct.', 401);
+  }
+
+  await ctx.env.DB.prepare('UPDATE auth_login_codes SET used_at = ? WHERE id = ?').bind(nowIso(), challenge.id).run();
+
   let user = await ctx.env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<DbUser>();
   if (!user) {
     const userId = id();
     await ctx.env.DB.prepare('INSERT INTO users (id, email) VALUES (?, ?)').bind(userId, email).run();
     user = await ctx.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first<DbUser>();
   }
+  const token = randomToken();
+  await ctx.env.DB.prepare(
+    'INSERT INTO auth_sessions (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)',
+  )
+    .bind(id(), user!.id, await sha256(token), futureIso(sessionExpiresMs))
+    .run();
   return json(
     { ok: true, user: mapUser(user!) },
-    { headers: { 'set-cookie': `${cookieName}=${encodeURIComponent(email)}; Path=/; SameSite=Lax; Max-Age=31536000` } },
+    { headers: { 'set-cookie': sessionCookie(ctx.request, token, Math.floor(sessionExpiresMs / 1000)) } },
   );
 }
 
-function logout() {
-  return json({ ok: true }, { headers: { 'set-cookie': `${cookieName}=; Path=/; SameSite=Lax; Max-Age=0` } });
+async function logout(ctx: Ctx) {
+  const token = getCookie(ctx.request, sessionCookieName);
+  if (token) {
+    await ctx.env.DB.prepare('UPDATE auth_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL')
+      .bind(nowIso(), await sha256(token))
+      .run();
+  }
+  return json({ ok: true }, { headers: { 'set-cookie': clearSessionCookie() } });
 }
 
 function mapUser(user: DbUser) {
