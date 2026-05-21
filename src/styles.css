@@ -209,21 +209,27 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
   color: #5d7f6b;
 }
 .diary-weight { grid-template-columns: minmax(0, 1fr) auto; }
-.daily-goals { display: grid; gap: 8px; }
+.daily-goals { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .daily-goal, .daily-goal-setting label {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: #40504a;
   font-weight: 700;
+  font-size: 0.8rem;
 }
 .daily-goal input, .daily-goal-setting input[type="checkbox"] { width: auto; min-height: auto; }
-.daily-goal-settings { display: grid; gap: 10px; }
-.daily-goal-setting {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(160px, 240px);
-  gap: 10px;
-  align-items: center;
+.daily-goal-settings { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.daily-goal-setting { display: flex; flex-direction: column; gap: 6px; }
+.daily-goal-setting label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.daily-goal-setting input:not([type="checkbox"]) { width: 100%; }
+.highlight-stat {
+  display: block;
+  background: #fef9c3;
+  color: #713f12;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 1rem;
 }
 .list-row span:first-child { min-width: 0; }
 small { display: block; color: #63716b; margin-top: 4px; }
@@ -238,6 +244,8 @@ small { display: block; color: #63716b; margin-top: 4px; }
 
 @media (max-width: 820px) {
   .shell { display: block; }
+  .daily-goals { grid-template-columns: 1fr; }
+  .daily-goal-settings { grid-template-columns: 1fr; }
   .mobile-topbar {
     display: flex;
     align-items: center;

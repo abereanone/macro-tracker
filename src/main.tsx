@@ -739,7 +739,13 @@ function Dashboard({ user }: { user: User }) {
                       load();
                     }}
                   />
-                  <span>{goal.label}</span>
+                  <span>
+                    {goal.goalType === "move"
+                      ? `Move > ${goal.minutes ?? 10} mins`
+                      : goal.goalType === "exercise"
+                        ? `Exercise > ${goal.minutes ?? 30} mins`
+                        : goal.label}
+                  </span>
                 </label>
               ))}
             </div>
@@ -754,8 +760,7 @@ function Dashboard({ user }: { user: User }) {
                 </small>
               </span>
               <span>
-                {Math.round(item.calories)} cal · {Math.round(item.protein_g)}g
-                P
+                {Math.round(item.calories)}cal · {Math.round(item.protein_g)}P
               </span>
               <button
                 className="ghost"
@@ -1631,7 +1636,7 @@ function Goals() {
           </p>
           {maintenance && (
             <div className="calculation-work">
-              <strong>
+              <strong className="highlight-stat">
                 Calculated maintenance: {maintenance.maintenanceCalories}{" "}
                 calories/day
               </strong>
@@ -1666,7 +1671,7 @@ function Goals() {
               ) : null}
               {calculation && (
                 <>
-                  <strong>
+                  <strong className="highlight-stat">
                     Daily calorie goal: {calculation.targetCalories}{" "}
                     calories/day
                   </strong>
@@ -1883,6 +1888,7 @@ function SettingsPage({
   const [loadingActiveGoal, setLoadingActiveGoal] = useState(false);
   const [dailyGoals, setDailyGoals] = useState<DailyGoal[]>([]);
   const [savingDailyGoals, setSavingDailyGoals] = useState(false);
+  const [newGoalLabel, setNewGoalLabel] = useState("");
 
   useEffect(() => {
     if (!isCalculatedCalorieGoal) return;
@@ -2083,7 +2089,7 @@ function SettingsPage({
           </button>
         </form>
       </Panel>
-      <Panel title="Daily Goals">
+      <Panel title="Daily Goals | Customize the goals you want to track in your diary.">
         <form
           onSubmit={async (event) => {
             event.preventDefault();
@@ -2112,6 +2118,21 @@ function SettingsPage({
                   />
                   <span>{goal.goalType === "custom" ? "Custom" : goal.label}</span>
                 </label>
+                {goal.goalType === "move" && (
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    value={goal.minutes ?? ""}
+                    onChange={(event) =>
+                      updateDailyGoal(goal.id, {
+                        minutes: Number(event.target.value),
+                        label: `Move for ${event.target.value} minutes`,
+                      })
+                    }
+                    aria-label="Move minutes"
+                  />
+                )}
                 {goal.goalType === "exercise" && (
                   <input
                     type="number"
@@ -2121,7 +2142,7 @@ function SettingsPage({
                     onChange={(event) =>
                       updateDailyGoal(goal.id, {
                         minutes: Number(event.target.value),
-                        label: `Exercise at least ${event.target.value} minutes`,
+                        label: `Exercise for ${event.target.value} minutes`,
                       })
                     }
                     aria-label="Exercise minutes"
@@ -2138,6 +2159,27 @@ function SettingsPage({
                 )}
               </div>
             ))}
+            <div className="daily-goal-setting">
+              <input
+                value={newGoalLabel}
+                onChange={(event) => setNewGoalLabel(event.target.value)}
+                placeholder="Add custom goal..."
+              />
+              <button
+                type="button"
+                className="ghost"
+                disabled={!newGoalLabel.trim()}
+                onClick={() => {
+                  setDailyGoals((current) => [
+                    ...current,
+                    { id: "", label: newGoalLabel.trim(), goalType: "custom", minutes: null, active: true },
+                  ]);
+                  setNewGoalLabel("");
+                }}
+              >
+                <Plus size={16} /> Add
+              </button>
+            </div>
           </div>
           <button disabled={savingDailyGoals}>
             <Settings size={16} />{" "}

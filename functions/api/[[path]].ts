@@ -1057,9 +1057,10 @@ async function ensureDailyGoalDefaults(ctx: Ctx, user: DbUser) {
     .all<{ goal_type: string }>();
   const types = new Set(existing.results.map((row) => row.goal_type));
   const defaults = [
-    { type: 'move', label: 'Move at least 10 minutes', minutes: 10, active: 0, sort: 0 },
-    { type: 'exercise', label: 'Exercise at least 30 minutes', minutes: 30, active: 0, sort: 1 },
-    { type: 'custom', label: 'Enter your own goal', minutes: null, active: 0, sort: 2 },
+    { type: 'move', label: 'Move for 10 minutes', minutes: 10, active: 0, sort: 0 },
+    { type: 'exercise', label: 'Exercise for 30 minutes', minutes: 30, active: 0, sort: 1 },
+    { type: 'sunlight', label: 'Get morning sunlight', minutes: null, active: 0, sort: 2 },
+    { type: 'custom', label: 'Enter your own goal', minutes: null, active: 0, sort: 3 },
   ];
   for (const goal of defaults) {
     if (types.has(goal.type)) continue;
@@ -1103,19 +1104,34 @@ async function updateDailyGoals(ctx: Ctx, user: DbUser) {
   await ensureDailyGoalDefaults(ctx, user);
   for (const rawGoal of goals) {
     const goal = rawGoal as Record<string, unknown>;
-    const goalId = requireString(goal.id, 'Daily goal');
-    const existing = await ctx.env.DB.prepare('SELECT * FROM daily_goal_definitions WHERE id = ? AND user_id = ?')
-      .bind(goalId, user.id)
-      .first<DbDailyGoal>();
-    if (!existing) continue;
+    const goalId = typeof goal.id === 'string' ? goal.id.trim() : '';
+    const label = typeof goal.label === 'string' ? goal.label.trim() : '';
     const active = goal.active ? 1 : 0;
     const minutes = goal.minutes === null || goal.minutes === undefined || goal.minutes === '' ? null : positiveNumber(goal.minutes, 'Minutes');
-    const label = goal.label === undefined ? existing.label : requireString(goal.label, 'Goal label');
-    await ctx.env.DB.prepare(
-      'UPDATE daily_goal_definitions SET label = ?, minutes = ?, active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
-    )
-      .bind(label, minutes, active, goalId, user.id)
-      .run();
+
+    if (goalId) {
+      const existing = await ctx.env.DB.prepare('SELECT * FROM daily_goal_definitions WHERE id = ? AND user_id = ?')
+        .bind(goalId, user.id)
+        .first<DbDailyGoal>();
+      if (!existing) continue;
+      const updatedLabel = label || existing.label;
+      await ctx.env.DB.prepare(
+        'UPDATE daily_goal_definitions SET label = ?, minutes = ?, active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+      )
+        .bind(updatedLabel, minutes, active, goalId, user.id)
+        .run();
+    } else if (label) {
+      const maxSort = await ctx.env.DB.prepare(
+        'SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM daily_goal_definitions WHERE user_id = ?',
+      )
+        .bind(user.id)
+        .first<{ next: number }>();
+      await ctx.env.DB.prepare(
+        'INSERT INTO daily_goal_definitions (id, user_id, label, goal_type, minutes, active, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+        .bind(id(), user.id, label, 'custom', null, 1, maxSort?.next ?? 99)
+        .run();
+    }
   }
   return listDailyGoals(ctx, user);
 }
