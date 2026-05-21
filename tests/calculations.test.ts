@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantity, convertQuantityToGrams, estimateMaintenanceCalories, toLb } from '../src/shared/calculations';
+import { calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, toLb } from '../src/shared/calculations';
 
 describe('nutrition calculations', () => {
   it('scales logged nutrients proportionally', () => {
@@ -80,6 +80,23 @@ describe('weight and maintenance calculations', () => {
       endWeight: { date: '2026-05-07', value: 186, unit: 'lb', valueLb: 186 },
     });
     expect(result.estimatedMaintenanceCalories).toBe(2000);
+  });
+
+  it('excludes the end weigh-in day and averages only logged diary days', () => {
+    const result = estimateMaintenanceFromLoggedDays({
+      startWeight: { date: '2026-05-07', value: 200, unit: 'lb', valueLb: 200 },
+      endWeight: { date: '2026-05-21', value: 198, unit: 'lb', valueLb: 198 },
+      loggedCaloriesByDay: [
+        { date: '2026-05-07', calories: 1900 },
+        { date: '2026-05-08', calories: 2100 },
+        { date: '2026-05-21', calories: 4000 },
+      ],
+    });
+    expect(result.days).toBe(14);
+    expect(result.loggedDayCount).toBe(2);
+    expect(result.averageLoggedCalories).toBe(2000);
+    expect(result.calorieEnd).toBe('2026-05-20');
+    expect(result.estimatedMaintenanceCalories).toBe(2500);
   });
 });
 

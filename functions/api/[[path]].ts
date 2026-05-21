@@ -1,4 +1,4 @@
-import { calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, toLb } from '../../src/shared/calculations';
+import { calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, toLb } from '../../src/shared/calculations';
 import { Resend } from 'resend';
 import {
   nonNegativeNumber,
@@ -42,6 +42,23 @@ type DbFood = {
 };
 type DbMeal = { id: string; owner_user_id: string; name: string; description: string | null; visibility: string };
 type DbWeight = { id: string; entry_date: string; weight_value: number; weight_unit: 'lb' | 'kg'; notes: string | null };
+type DbMaintenanceSnapshot = {
+  id: string;
+  calculated_date: string;
+  maintenance_calories: number;
+  source: string;
+  start_date: string | null;
+  end_date: string | null;
+  calorie_start_date: string | null;
+  calorie_end_date: string | null;
+  period_days: number | null;
+  logged_day_count: number | null;
+  average_logged_calories: number | null;
+  estimated_period_calories: number | null;
+  weight_change_lb: number | null;
+  daily_weight_adjustment: number | null;
+};
+type DbDailyGoal = { id: string; label: string; goal_type: string; minutes: number | null; active: number; sort_order: number };
 
 const sessionCookieName = 'macro_session';
 const loginCodeExpiresMs = 10 * 60 * 1000;
@@ -91,6 +108,9 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
 
     if (path === '/reports/summary' && method === 'GET') return reportSummary(ctx, user, url);
     if (path === '/reports/maintenance' && method === 'GET') return reportMaintenance(ctx, user, url);
+    if (path === '/daily-goals' && method === 'GET') return listDailyGoals(ctx, user);
+    if (path === '/daily-goals' && method === 'PUT') return updateDailyGoals(ctx, user);
+    if (path === '/daily-goal-completions' && method === 'POST') return setDailyGoalCompletion(ctx, user);
     if (path === '/goal-plans' && method === 'POST') return createGoalPlan(ctx, user);
     if (path === '/goal-plans' && method === 'GET') return listGoalPlans(ctx, user, url);
     if (path === '/goal-plans/active' && method === 'GET') return activeGoalPlan(ctx, user);
@@ -128,6 +148,21 @@ async function body(ctx: Ctx) {
 
 function id() {
   return crypto.randomUUID();
+}
+
+function dateInUserTimezone(user: DbUser, date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: user.timezone || 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value;
+  return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
+function addDays(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 }
 
 function nowIso() {
@@ -331,6 +366,9 @@ async function deleteMyData(ctx: Ctx, user: DbUser) {
     ctx.env.DB.prepare('DELETE FROM diary_items WHERE user_id = ?').bind(user.id),
     ctx.env.DB.prepare('DELETE FROM weight_entries WHERE user_id = ?').bind(user.id),
     ctx.env.DB.prepare('DELETE FROM goal_plans WHERE user_id = ?').bind(user.id),
+    ctx.env.DB.prepare('DELETE FROM user_maintenance_snapshots WHERE user_id = ?').bind(user.id),
+    ctx.env.DB.prepare('DELETE FROM daily_goal_completions WHERE user_id = ?').bind(user.id),
+    ctx.env.DB.prepare('DELETE FROM daily_goal_definitions WHERE user_id = ?').bind(user.id),
     ctx.env.DB.prepare(
       `DELETE FROM saved_meal_items
        WHERE saved_meal_id IN (
@@ -762,6 +800,7 @@ async function getDay(ctx: Ctx, user: DbUser, date: string) {
     })),
   );
   const weight = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? AND entry_date = ?').bind(user.id, eatenDate).first<DbWeight>();
+  const dailyGoals = await dailyGoalsForDate(ctx, user, eatenDate);
   const goal = user.protein_goal_g;
   return json({
     ok: true,
@@ -772,6 +811,7 @@ async function getDay(ctx: Ctx, user: DbUser, date: string) {
       : null,
     items: items.results,
     weight,
+    dailyGoals,
   });
 }
 
@@ -799,7 +839,8 @@ async function upsertWeight(ctx: Ctx, user: DbUser) {
     .bind(weightId, user.id, entryDate, weightValue, weightUnit, notes)
     .run();
   const weight = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? AND entry_date = ?').bind(user.id, entryDate).first<DbWeight>();
-  return json({ ok: true, weight });
+  const maintenance = weight && entryDate === dateInUserTimezone(user) ? await recalculateMaintenanceSnapshot(ctx, user, weight) : null;
+  return json({ ok: true, weight, maintenance });
 }
 
 async function updateWeight(ctx: Ctx, user: DbUser, weightId: string) {
@@ -860,19 +901,28 @@ async function reportMaintenance(ctx: Ctx, user: DbUser, url: URL) {
   }
   const startWeight = mapWeightPoint(weights.results[0]);
   const endWeight = mapWeightPoint(weights.results[weights.results.length - 1]);
-  const total = await ctx.env.DB.prepare('SELECT COALESCE(SUM(calories), 0) AS totalCalories FROM diary_items WHERE user_id = ? AND eaten_date BETWEEN ? AND ?')
-    .bind(user.id, startWeight.date, endWeight.date)
-    .first<{ totalCalories: number }>();
+  const loggedDays = await loggedCaloriesBetweenWeights(ctx, user, startWeight.date, endWeight.date);
+  if (!loggedDays.length) {
+    return json({
+      ok: true,
+      canCalculate: false,
+      start: startWeight.date,
+      end: endWeight.date,
+      requestedStart: start,
+      requestedEnd: end,
+      startWeight,
+      endWeight,
+      message: 'At least one logged food day is required between weight entries.',
+    });
+  }
   return json({
     ok: true,
     canCalculate: true,
-    start: startWeight.date,
-    end: endWeight.date,
     requestedStart: start,
     requestedEnd: end,
     startWeight,
     endWeight,
-    ...estimateMaintenanceCalories({ start: startWeight.date, end: endWeight.date, totalCalories: Number(total?.totalCalories ?? 0), startWeight, endWeight }),
+    ...estimateMaintenanceFromLoggedDays({ startWeight, endWeight, loggedCaloriesByDay: loggedDays }),
   });
 }
 
@@ -885,11 +935,240 @@ function mapWeightPoint(weight: DbWeight) {
   };
 }
 
+async function loggedCaloriesBetweenWeights(ctx: Ctx, user: DbUser, startDate: string, endDate: string) {
+  const result = await ctx.env.DB.prepare(
+    `SELECT eaten_date AS date, SUM(calories) AS calories
+     FROM diary_items
+     WHERE user_id = ? AND eaten_date >= ? AND eaten_date < ?
+     GROUP BY eaten_date ORDER BY eaten_date`,
+  )
+    .bind(user.id, startDate, endDate)
+    .all<{ date: string; calories: number }>();
+  return result.results.map((row) => ({ date: row.date, calories: Number(row.calories) }));
+}
+
+function mapMaintenanceSnapshot(snapshot: DbMaintenanceSnapshot) {
+  return {
+    calculatedDate: snapshot.calculated_date,
+    maintenanceCalories: Math.round(Number(snapshot.maintenance_calories)),
+    estimatedMaintenanceCalories: Math.round(Number(snapshot.maintenance_calories)),
+    source: snapshot.source,
+    start: snapshot.start_date,
+    end: snapshot.end_date,
+    calorieStart: snapshot.calorie_start_date,
+    calorieEnd: snapshot.calorie_end_date,
+    days: snapshot.period_days,
+    loggedDayCount: snapshot.logged_day_count,
+    averageLoggedCalories: snapshot.average_logged_calories,
+    estimatedPeriodCalories: snapshot.estimated_period_calories,
+    weightChangeLb: snapshot.weight_change_lb,
+    dailyWeightAdjustment: snapshot.daily_weight_adjustment,
+  };
+}
+
+async function latestMaintenance(ctx: Ctx, user: DbUser) {
+  const snapshot = await ctx.env.DB.prepare(
+    'SELECT * FROM user_maintenance_snapshots WHERE user_id = ? ORDER BY calculated_date DESC, created_at DESC LIMIT 1',
+  )
+    .bind(user.id)
+    .first<DbMaintenanceSnapshot>();
+  if (snapshot) return mapMaintenanceSnapshot(snapshot);
+
+  const allWeights = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? ORDER BY entry_date')
+    .bind(user.id)
+    .all<DbWeight>();
+  const latestWeight = allWeights.results.length > 0 ? allWeights.results[allWeights.results.length - 1] : null;
+  if (!latestWeight) return null;
+
+  if (allWeights.results.length >= 2) {
+    const startWeight = mapWeightPoint(allWeights.results[0]);
+    const endWeight = mapWeightPoint(latestWeight);
+    if (startWeight.date !== endWeight.date) {
+      const loggedDays = await loggedCaloriesBetweenWeights(ctx, user, startWeight.date, endWeight.date);
+      if (loggedDays.length >= 7) {
+        const estimate = estimateMaintenanceFromLoggedDays({ startWeight, endWeight, loggedCaloriesByDay: loggedDays });
+        return {
+          ...estimate,
+          source: 'weigh-in',
+          calculatedDate: endWeight.date,
+          maintenanceCalories: estimate.estimatedMaintenanceCalories,
+        };
+      }
+    }
+  }
+
+  const weight = mapWeightPoint(latestWeight);
+  return {
+    calculatedDate: weight.date,
+    maintenanceCalories: Math.round(weight.valueLb * 10),
+    estimatedMaintenanceCalories: Math.round(weight.valueLb * 10),
+    source: 'body-weight-fallback',
+    latestWeight: weight,
+    message: 'Starting estimate: 10 calories per pound of body weight until enough weigh-in and diary data is available.',
+  };
+}
+
+async function recalculateMaintenanceSnapshot(ctx: Ctx, user: DbUser, endWeight: DbWeight) {
+  const priorWeight = await ctx.env.DB.prepare(
+    'SELECT * FROM weight_entries WHERE user_id = ? AND entry_date < ? ORDER BY entry_date ASC LIMIT 1',
+  )
+    .bind(user.id, endWeight.entry_date)
+    .first<DbWeight>();
+  if (priorWeight) {
+    const startWeight = mapWeightPoint(priorWeight);
+    const finishWeight = mapWeightPoint(endWeight);
+    const loggedDays = await loggedCaloriesBetweenWeights(ctx, user, startWeight.date, finishWeight.date);
+    if (loggedDays.length >= 7) {
+      const estimate = estimateMaintenanceFromLoggedDays({ startWeight, endWeight: finishWeight, loggedCaloriesByDay: loggedDays });
+      const snapshotId = id();
+      await ctx.env.DB.prepare(
+        `INSERT INTO user_maintenance_snapshots
+         (id, user_id, calculated_date, maintenance_calories, source, start_date, end_date, calorie_start_date, calorie_end_date, period_days, logged_day_count, average_logged_calories, estimated_period_calories, weight_change_lb, daily_weight_adjustment)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+        .bind(
+          snapshotId,
+          user.id,
+          finishWeight.date,
+          estimate.estimatedMaintenanceCalories,
+          'weigh-in',
+          estimate.start,
+          estimate.end,
+          estimate.calorieStart,
+          estimate.calorieEnd,
+          estimate.days,
+          estimate.loggedDayCount,
+          estimate.averageLoggedCalories,
+          estimate.estimatedPeriodCalories,
+          estimate.weightChangeLb,
+          estimate.dailyWeightAdjustment,
+        )
+        .run();
+      const snapshot = await ctx.env.DB.prepare('SELECT * FROM user_maintenance_snapshots WHERE id = ?').bind(snapshotId).first<DbMaintenanceSnapshot>();
+      return snapshot ? mapMaintenanceSnapshot(snapshot) : null;
+    }
+  }
+  return null;
+}
+
+async function ensureDailyGoalDefaults(ctx: Ctx, user: DbUser) {
+  const existing = await ctx.env.DB.prepare('SELECT goal_type FROM daily_goal_definitions WHERE user_id = ?')
+    .bind(user.id)
+    .all<{ goal_type: string }>();
+  const types = new Set(existing.results.map((row) => row.goal_type));
+  const defaults = [
+    { type: 'move', label: 'Move at least 10 minutes', minutes: 10, active: 0, sort: 0 },
+    { type: 'exercise', label: 'Exercise at least 30 minutes', minutes: 30, active: 0, sort: 1 },
+    { type: 'custom', label: 'Enter your own goal', minutes: null, active: 0, sort: 2 },
+  ];
+  for (const goal of defaults) {
+    if (types.has(goal.type)) continue;
+    await ctx.env.DB.prepare(
+      'INSERT INTO daily_goal_definitions (id, user_id, label, goal_type, minutes, active, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+      .bind(id(), user.id, goal.label, goal.type, goal.minutes, goal.active, goal.sort)
+      .run();
+  }
+}
+
+function mapDailyGoal(goal: DbDailyGoal, completed = false) {
+  return {
+    id: goal.id,
+    label: goal.label,
+    goalType: goal.goal_type,
+    minutes: goal.minutes,
+    active: Boolean(goal.active),
+    sortOrder: goal.sort_order,
+    completed,
+  };
+}
+
+async function dailyGoalRows(ctx: Ctx, user: DbUser, activeOnly = false) {
+  await ensureDailyGoalDefaults(ctx, user);
+  const query = activeOnly
+    ? 'SELECT * FROM daily_goal_definitions WHERE user_id = ? AND active = 1 ORDER BY sort_order, created_at'
+    : 'SELECT * FROM daily_goal_definitions WHERE user_id = ? ORDER BY sort_order, created_at';
+  const goals = await ctx.env.DB.prepare(query).bind(user.id).all<DbDailyGoal>();
+  return goals.results;
+}
+
+async function listDailyGoals(ctx: Ctx, user: DbUser) {
+  const goals = await dailyGoalRows(ctx, user);
+  return json({ ok: true, goals: goals.map((goal) => mapDailyGoal(goal)) });
+}
+
+async function updateDailyGoals(ctx: Ctx, user: DbUser) {
+  const input = await body(ctx);
+  const goals = Array.isArray(input.goals) ? input.goals : [];
+  await ensureDailyGoalDefaults(ctx, user);
+  for (const rawGoal of goals) {
+    const goal = rawGoal as Record<string, unknown>;
+    const goalId = requireString(goal.id, 'Daily goal');
+    const existing = await ctx.env.DB.prepare('SELECT * FROM daily_goal_definitions WHERE id = ? AND user_id = ?')
+      .bind(goalId, user.id)
+      .first<DbDailyGoal>();
+    if (!existing) continue;
+    const active = goal.active ? 1 : 0;
+    const minutes = goal.minutes === null || goal.minutes === undefined || goal.minutes === '' ? null : positiveNumber(goal.minutes, 'Minutes');
+    const label = goal.label === undefined ? existing.label : requireString(goal.label, 'Goal label');
+    await ctx.env.DB.prepare(
+      'UPDATE daily_goal_definitions SET label = ?, minutes = ?, active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+    )
+      .bind(label, minutes, active, goalId, user.id)
+      .run();
+  }
+  return listDailyGoals(ctx, user);
+}
+
+async function dailyGoalsForDate(ctx: Ctx, user: DbUser, entryDate: string) {
+  const goals = await dailyGoalRows(ctx, user, true);
+  if (!goals.length) return [];
+  const completions = await ctx.env.DB.prepare(
+    'SELECT goal_id, completed FROM daily_goal_completions WHERE user_id = ? AND entry_date = ?',
+  )
+    .bind(user.id, entryDate)
+    .all<{ goal_id: string; completed: number }>();
+  const completionMap = new Map(completions.results.map((row) => [row.goal_id, Boolean(row.completed)]));
+  return goals.map((goal) => mapDailyGoal(goal, completionMap.get(goal.id) ?? false));
+}
+
+async function setDailyGoalCompletion(ctx: Ctx, user: DbUser) {
+  const input = await body(ctx);
+  const goalId = requireString(input.goalId, 'Daily goal');
+  const entryDate = requireDate(input.entryDate, 'Date');
+  const completed = input.completed ? 1 : 0;
+  const goal = await ctx.env.DB.prepare('SELECT * FROM daily_goal_definitions WHERE id = ? AND user_id = ? AND active = 1')
+    .bind(goalId, user.id)
+    .first<DbDailyGoal>();
+  if (!goal) throw new ApiError('NOT_FOUND', 'Daily goal not found.', 404);
+  await ctx.env.DB.prepare(
+    `INSERT INTO daily_goal_completions (id, user_id, goal_id, entry_date, completed)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, goal_id, entry_date) DO UPDATE SET completed = excluded.completed, updated_at = CURRENT_TIMESTAMP`,
+  )
+    .bind(id(), user.id, goalId, entryDate, completed)
+    .run();
+  return json({ ok: true, goal: mapDailyGoal(goal, Boolean(completed)) });
+}
+
 async function createGoalPlan(ctx: Ctx, user: DbUser) {
   const input = await body(ctx);
   const goalWeightValue = positiveNumber(input.goalWeightValue, 'Goal weight');
   const goalWeightUnit = requireWeightUnit(input.goalWeightUnit ?? 'lb');
-  const targetDate = requireDate(input.targetDate, 'Target date');
+  let targetDate: string;
+  if (input.goalMode === 'pace') {
+    const weeklyPaceLb = positiveNumber(input.weeklyPaceLb, 'Weekly pace');
+    const latestWeight = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? ORDER BY entry_date DESC LIMIT 1')
+      .bind(user.id)
+      .first<DbWeight>();
+    if (!latestWeight) throw new ApiError('VALIDATION_ERROR', 'Add a current weight before setting a pace goal.');
+    const currentWeightLb = toLb(latestWeight.weight_value, latestWeight.weight_unit);
+    const goalWeightLb = toLb(goalWeightValue, goalWeightUnit);
+    const weeks = Math.abs(goalWeightLb - currentWeightLb) / weeklyPaceLb;
+    targetDate = addDays(dateInUserTimezone(user), Math.max(1, Math.ceil(weeks * 7)));
+  } else {
+    targetDate = requireDate(input.targetDate, 'Target date');
+  }
   if (Date.parse(`${targetDate}T00:00:00Z`) <= Date.now()) throw new ApiError('VALIDATION_ERROR', 'Target date must be in the future.');
   await ctx.env.DB.prepare('UPDATE goal_plans SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?').bind(user.id).run();
   const goalId = id();
@@ -918,12 +1197,14 @@ async function archiveGoalPlan(ctx: Ctx, user: DbUser, goalId: string) {
 }
 
 async function activeGoalPlan(ctx: Ctx, user: DbUser) {
+  const maintenance = await latestMaintenance(ctx, user);
   const plan = await ctx.env.DB.prepare('SELECT * FROM goal_plans WHERE user_id = ? AND is_active = 1 AND (archived_at IS NULL OR archived_at = \'\') ORDER BY created_at DESC LIMIT 1')
     .bind(user.id)
     .first<{ id: string; goal_weight_value: number; goal_weight_unit: 'lb' | 'kg'; target_date: string }>();
-  if (!plan) return json({ ok: true, plan: null });
+  if (!plan) return json({ ok: true, plan: null, maintenance });
   const latestWeight = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? ORDER BY entry_date DESC LIMIT 1').bind(user.id).first<DbWeight>();
-  if (!latestWeight) return json({ ok: true, plan, calculation: null, message: 'Add a current weight to calculate target calories.' });
+  if (!latestWeight) return json({ ok: true, plan, maintenance, calculation: null, message: 'Add a current weight to calculate target calories.' });
+  if (!maintenance) return json({ ok: true, plan, maintenance, calculation: null, message: 'Add a current weight to estimate maintenance calories.' });
   const latestWeightLb = toLb(latestWeight.weight_value, latestWeight.weight_unit);
   const goalWeightLb = toLb(plan.goal_weight_value, plan.goal_weight_unit);
   const daysToTarget = Math.max(
@@ -937,16 +1218,12 @@ async function activeGoalPlan(ctx: Ctx, user: DbUser) {
     weeklyChangeLb: Math.round((weeklyChangeLb + Number.EPSILON) * 100) / 100,
     direction: weeklyChangeLb < 0 ? 'lose' : weeklyChangeLb > 0 ? 'gain' : 'maintain',
   };
-  const maintenanceEnd = latestWeight.entry_date;
-  const maintenanceStart = new Date(Date.parse(`${maintenanceEnd}T00:00:00Z`) - 13 * 86_400_000).toISOString().slice(0, 10);
-  const maintenance = await maintenanceForRange(ctx, user, maintenanceStart, maintenanceEnd);
-  if (!maintenance) return json({ ok: true, plan, goalPace, calculation: null, message: 'Add at least two weights and food logs to estimate maintenance.' });
   const calculation = calculateGoalTarget({
     currentWeightLb: latestWeightLb,
     goalWeightLb,
-    currentDate: new Date().toISOString().slice(0, 10),
+    currentDate: dateInUserTimezone(user),
     targetDate: plan.target_date,
-    maintenanceCalories: maintenance.estimatedMaintenanceCalories,
+    maintenanceCalories: maintenance.maintenanceCalories,
   });
   return json({ ok: true, plan, goalPace, maintenance, calculation });
 }

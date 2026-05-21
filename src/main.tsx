@@ -56,6 +56,42 @@ type SavedMeal = {
   visibility: "private" | "public";
   items: MealItem[];
 };
+type ActiveGoal = {
+  plan: unknown | null;
+  maintenance?: {
+    maintenanceCalories: number;
+    estimatedMaintenanceCalories: number;
+    source: string;
+    start?: string | null;
+    end?: string | null;
+    calorieStart?: string | null;
+    calorieEnd?: string | null;
+    days?: number | null;
+    loggedDayCount?: number | null;
+    averageLoggedCalories?: number | null;
+    estimatedPeriodCalories?: number | null;
+    weightChangeLb?: number | null;
+    dailyWeightAdjustment?: number | null;
+    message?: string;
+  } | null;
+  calculation?: {
+    days: number;
+    weightChangeLb: number;
+    dailyAdjustment: number;
+    targetCalories: number;
+    weeklyChangeLb: number;
+    unrealistic?: boolean;
+  } | null;
+  message?: string;
+};
+type DailyGoal = {
+  id: string;
+  label: string;
+  goalType: string;
+  minutes: number | null;
+  active: boolean;
+  completed?: boolean;
+};
 
 const routes = [
   "app",
@@ -359,6 +395,9 @@ function Dashboard({ user }: { user: User }) {
   const [activeGoal, setActiveGoal] = useState<any>(null);
   const [popupMessage, setPopupMessage] = useState("");
   const [status, setStatus] = useState("");
+  const [weightValue, setWeightValue] = useState("");
+  const [weightUnit, setWeightUnit] = useState(user.preferredWeightUnit);
+  const [savingWeight, setSavingWeight] = useState(false);
   const load = () => {
     api(`/days/${date}`).then(setDay);
     api<{ meals: SavedMeal[] }>("/saved-meals?scope=all").then((res) =>
@@ -369,6 +408,15 @@ function Dashboard({ user }: { user: User }) {
       .catch(() => setActiveGoal(null));
   };
   useEffect(load, [date]);
+  useEffect(() => {
+    setWeightValue(day?.weight ? String(day.weight.weight_value) : "");
+    setWeightUnit(day?.weight?.weight_unit ?? user.preferredWeightUnit);
+  }, [day?.weight, user.preferredWeightUnit]);
+  useEffect(() => {
+    if (!popupMessage) return;
+    const timeout = window.setTimeout(() => setPopupMessage(""), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [popupMessage]);
   useEffect(() => {
     const query = foodSearch.trim();
     if (!query || selectedFood?.description === foodSearch) {
@@ -387,9 +435,18 @@ function Dashboard({ user }: { user: User }) {
   }, [foodSearch, selectedFood]);
 
   const totals = day?.totals;
+  const calorieGoal =
+    user.calorieGoalType === "goal-based"
+      ? activeGoal?.calculation?.targetCalories
+      : user.calorieGoalValue;
+  const savedWeightValue = day?.weight ? String(day.weight.weight_value) : "";
+  const savedWeightUnit = day?.weight?.weight_unit ?? user.preferredWeightUnit;
+  const weightChanged =
+    weightValue !== savedWeightValue || weightUnit !== savedWeightUnit;
   const canAddFood = Boolean(
     selectedFood && Number(foodQuantity) > 0 && !addingFood,
   );
+  const canSaveWeight = Number(weightValue) > 0 && weightChanged && !savingWeight;
   const quantityUnitOptions = ["g", "oz", "lb", "kg"];
   if (selectedFood && !quantityUnitOptions.includes(selectedFood.servingUnit))
     quantityUnitOptions.push(selectedFood.servingUnit);
@@ -446,15 +503,15 @@ function Dashboard({ user }: { user: User }) {
         </div>
         <div
           className={
-            user.calorieGoalValue && totals?.calories >= user.calorieGoalValue
+            calorieGoal && totals?.calories >= calorieGoal
               ? "notice success calories"
               : "notice calories"
           }
         >
-          {user.calorieGoalValue
-            ? (totals?.calories ?? 0) >= user.calorieGoalValue
-              ? `Calorie goal met: ${Math.round(totals?.calories ?? 0)} of ${user.calorieGoalValue} cal`
-              : `${Math.round(user.calorieGoalValue - (totals?.calories ?? 0))} calories remaining`
+          {calorieGoal
+            ? (totals?.calories ?? 0) >= calorieGoal
+              ? `Calorie goal met: ${Math.round(totals?.calories ?? 0)} of ${calorieGoal} cal`
+              : `${Math.round(calorieGoal - (totals?.calories ?? 0))} calories remaining`
             : "Add a calorie goal in settings."}
         </div>
       </div>
@@ -621,40 +678,72 @@ function Dashboard({ user }: { user: User }) {
               className="compact-form"
               onSubmit={async (event) => {
                 event.preventDefault();
-                const form = new FormData(event.currentTarget);
-                await api("/weight", {
-                  method: "POST",
-                  body: JSON.stringify({
-                    entryDate: date,
-                    weightValue: numberValue(form.get("weightValue")),
-                    weightUnit: form.get("weightUnit"),
-                  }),
-                });
-                event.currentTarget.reset();
-                load();
+                if (!canSaveWeight) return;
+                setSavingWeight(true);
+                try {
+                  await api("/weight", {
+                    method: "POST",
+                    body: JSON.stringify({
+                      entryDate: date,
+                      weightValue: Number(weightValue),
+                      weightUnit,
+                    }),
+                  });
+                  load();
+                } finally {
+                  setSavingWeight(false);
+                }
               }}
             >
               <input
                 name="weightValue"
                 type="number"
                 step="0.1"
-                placeholder={day?.weight?.weight_value ?? "Weight"}
+                placeholder="Weight"
+                value={weightValue}
+                onChange={(event) => setWeightValue(event.target.value)}
                 required
               />
               <select
                 name="weightUnit"
-                defaultValue={
-                  day?.weight?.weight_unit ?? user.preferredWeightUnit
+                value={weightUnit}
+                onChange={(event) =>
+                  setWeightUnit(event.target.value as "lb" | "kg")
                 }
               >
                 <option>lb</option>
                 <option>kg</option>
               </select>
-              <button>
-                <Scale size={16} /> Save
+              <button disabled={!canSaveWeight}>
+                <Scale size={16} /> {savingWeight ? "Saving..." : "Save"}
               </button>
             </form>
           </div>
+          {day?.dailyGoals?.length > 0 && (
+            <div className="daily-goals">
+              {day.dailyGoals.map((goal: DailyGoal) => (
+                <label key={goal.id} className="daily-goal">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(goal.completed)}
+                    onChange={async (event) => {
+                      await api("/daily-goal-completions", {
+                        method: "POST",
+                        body: JSON.stringify({
+                          goalId: goal.id,
+                          entryDate: date,
+                          completed: event.target.checked,
+                        }),
+                      });
+                      setPopupMessage("Changes saved");
+                      load();
+                    }}
+                  />
+                  <span>{goal.label}</span>
+                </label>
+              ))}
+            </div>
+          )}
           {day?.items?.map((item: any) => (
             <div className="list-row" key={item.id}>
               <span>
@@ -967,7 +1056,6 @@ function FoodForm({
             name="proteinG"
             type="number"
             step="0.1"
-            placeholder="31"
             value={macros.proteinG || ""}
             onChange={(event) => updateMacro("proteinG", event.target.value)}
           />
@@ -978,7 +1066,6 @@ function FoodForm({
             name="fatG"
             type="number"
             step="0.1"
-            placeholder="3.6"
             value={macros.fatG || ""}
             onChange={(event) => updateMacro("fatG", event.target.value)}
           />
@@ -989,7 +1076,6 @@ function FoodForm({
             name="carbohydrateG"
             type="number"
             step="0.1"
-            placeholder="0"
             value={macros.carbohydrateG || ""}
             onChange={(event) =>
               updateMacro("carbohydrateG", event.target.value)
@@ -1455,7 +1541,7 @@ function quantityUnitOptions(currentUnit: string) {
 }
 
 function Reports() {
-  const [start, setStart] = useState(() => daysAgo(13));
+  const [start, setStart] = useState(() => daysAgo(34));
   const [end, setEnd] = useState(today());
   const [summary, setSummary] = useState<any>(null);
   const [maintenance, setMaintenance] = useState<any>(null);
@@ -1491,16 +1577,21 @@ function Reports() {
             From {maintenance.startWeight.date} at{" "}
             {maintenance.startWeight.value} {maintenance.startWeight.unit} to{" "}
             {maintenance.endWeight.date} at {maintenance.endWeight.value}{" "}
-            {maintenance.endWeight.unit}, estimated maintenance is about{" "}
+            {maintenance.endWeight.unit}, using diary entries from{" "}
+            {maintenance.calorieStart} through {maintenance.calorieEnd},
+            estimated maintenance is about{" "}
             <strong>
               {maintenance.estimatedMaintenanceCalories} calories/day
-            </strong>
-            .
+            </strong>{" "}
+            from {maintenance.loggedDayCount} logged days.
           </p>
         ) : null}
       </Panel>
       <Panel title="Calories by Day">
         <Bars rows={summary?.days ?? []} />
+      </Panel>
+      <Panel title="Weight by Day">
+        <WeightBars rows={summary?.weights ?? []} />
       </Panel>
     </section>
   );
@@ -1508,22 +1599,18 @@ function Reports() {
 
 function Goals() {
   const [activePlan, setActivePlan] = useState<any>(null);
-  const [allGoals, setAllGoals] = useState<any[]>([]);
-  const [showArchived, setShowArchived] = useState(false);
+  const [goalMode, setGoalMode] = useState<"date" | "pace">("date");
   const loadActive = () => api("/goal-plans/active").then(setActivePlan);
-  const loadAll = (archived = false) =>
-    api<{ ok: boolean; plans: any[] }>(`/goal-plans?archived=${archived}`).then(
-      (res) => setAllGoals(res.plans || []),
-    );
   useEffect(() => {
     void loadActive();
-    void loadAll(showArchived);
-  }, [showArchived]);
-  const getStatus = (targetDate: string): "ongoing" | "achieved" | "missed" => {
-    const now = new Date().toISOString().slice(0, 10);
-    if (targetDate > now) return "ongoing";
-    return "missed";
-  };
+  }, []);
+  const maintenance = activePlan?.maintenance;
+  const calculation = activePlan?.calculation;
+  const allGoals: any[] = [];
+  const showArchived = false;
+  const setShowArchived = (_value: boolean) => {};
+  const loadAll = (_archived = false) => {};
+  const getStatus = (_targetDate: string) => "ongoing";
   return (
     <section>
       <Header title="Goals" icon={<Target />} />
@@ -1542,6 +1629,73 @@ function Goals() {
               ? `Needed average: ${activePlan.goalPace.direction === "maintain" ? "maintain weight" : `${activePlan.goalPace.direction} ${Math.abs(activePlan.goalPace.weeklyChangeLb)} lb/week`} from ${activePlan.goalPace.latestWeight.value} ${activePlan.goalPace.latestWeight.unit} on ${activePlan.goalPace.latestWeight.date}.`
               : "Add a current weight to calculate the weekly pace needed."}
           </p>
+          {maintenance && (
+            <div className="calculation-work">
+              <strong>
+                Calculated maintenance: {maintenance.maintenanceCalories}{" "}
+                calories/day
+              </strong>
+              {maintenance.source === "weigh-in" ? (
+                <>
+                  <span>
+                    Maintenance uses {maintenance.days} days from{" "}
+                    {maintenance.start} to {maintenance.end}; diary calories
+                    included {maintenance.calorieStart} through{" "}
+                    {maintenance.calorieEnd}.
+                  </span>
+                  <span>
+                    Average logged intake:{" "}
+                    {Math.round(maintenance.averageLoggedCalories ?? 0)}{" "}
+                    calories/day across {maintenance.loggedDayCount} logged
+                    days.
+                  </span>
+                  <span>
+                    Weight change: {maintenance.weightChangeLb} lb, so the
+                    daily weight adjustment is{" "}
+                    {Math.round(maintenance.dailyWeightAdjustment ?? 0)}{" "}
+                    calories/day.
+                  </span>
+                  <span>
+                    Math: {Math.round(maintenance.averageLoggedCalories ?? 0)} -
+                    ({maintenance.weightChangeLb} x 3500 / {maintenance.days}) ={" "}
+                    {maintenance.maintenanceCalories} calories/day.
+                  </span>
+                </>
+              ) : maintenance.source === "body-weight-fallback" ? (
+                <span>{maintenance.message}</span>
+              ) : null}
+              {calculation && (
+                <>
+                  <strong>
+                    Daily calorie goal: {calculation.targetCalories}{" "}
+                    calories/day
+                  </strong>
+                  <span>
+                    Goal adjustment: {Math.abs(calculation.weightChangeLb)} lb x
+                    3500 / {calculation.days} days ={" "}
+                    {calculation.dailyAdjustment} calories/day.
+                  </span>
+                  <span>
+                    Math: {maintenance.maintenanceCalories}{" "}
+                    {calculation.weightChangeLb < 0 ? "-" : "+"}{" "}
+                    {calculation.dailyAdjustment} ={" "}
+                    {calculation.targetCalories} calories/day.
+                  </span>
+                  {calculation.unrealistic && (
+                    <span className="error-text">
+                      This target appears aggressive.
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+          {!calculation && (
+            <p>
+              {activePlan?.message ??
+                "Add a current weight to calculate target calories."}
+            </p>
+          )}
         </Panel>
       )}
       <Panel title="Goal Plan">
@@ -1552,13 +1706,14 @@ function Goals() {
             await api("/goal-plans", {
               method: "POST",
               body: JSON.stringify({
+                goalMode,
                 goalWeightValue: numberValue(form.get("goalWeightValue")),
                 goalWeightUnit: form.get("goalWeightUnit"),
                 targetDate: form.get("targetDate"),
+                weeklyPaceLb: numberValue(form.get("weeklyPaceLb")),
               }),
             });
             loadActive();
-            loadAll(showArchived);
             (event.target as HTMLFormElement).reset();
           }}
         >
@@ -1575,13 +1730,42 @@ function Goals() {
               <option>kg</option>
             </select>
           </div>
-          <input name="targetDate" type="date" required />
+          <div className="segmented">
+            <button
+              type="button"
+              className={goalMode === "date" ? "active" : "ghost"}
+              onClick={() => setGoalMode("date")}
+            >
+              Date
+            </button>
+            <button
+              type="button"
+              className={goalMode === "pace" ? "active" : "ghost"}
+              onClick={() => setGoalMode("pace")}
+            >
+              Pace
+            </button>
+          </div>
+          {goalMode === "date" ? (
+            <input name="targetDate" type="date" required />
+          ) : (
+            <input
+              name="weeklyPaceLb"
+              type="number"
+              step="0.1"
+              min="0.1"
+              placeholder="Pounds per week"
+              required
+            />
+          )}
           <button>
             <Target size={16} /> Save goal
           </button>
         </form>
       </Panel>
-      <Panel title="Suggested Calories">
+      {false && (
+        <>
+        <Panel title="Suggested Calories">
         {activePlan?.calculation ? (
           <p>
             Target about{" "}
@@ -1599,7 +1783,7 @@ function Goals() {
           </p>
         )}
       </Panel>
-      <Panel title="All Goals">
+        <Panel title="All Goals">
         <div className="toolbar">
           <button
             className="ghost"
@@ -1636,7 +1820,9 @@ function Goals() {
             <p>{showArchived ? "No archived goals." : "No active goals."}</p>
           )}
         </div>
-      </Panel>
+        </Panel>
+        </>
+      )}
     </section>
   );
 }
@@ -1690,6 +1876,50 @@ function SettingsPage({
   const updateSettingsField = (field: keyof SettingsForm, value: string) => {
     setSettingsForm((current) => ({ ...current, [field]: value }));
   };
+  const isCalculatedCalorieGoal =
+    settingsForm.calorieGoalType === "goal-based";
+  const [activeGoal, setActiveGoal] = useState<ActiveGoal | null>(null);
+  const [activeGoalError, setActiveGoalError] = useState("");
+  const [loadingActiveGoal, setLoadingActiveGoal] = useState(false);
+  const [dailyGoals, setDailyGoals] = useState<DailyGoal[]>([]);
+  const [savingDailyGoals, setSavingDailyGoals] = useState(false);
+
+  useEffect(() => {
+    if (!isCalculatedCalorieGoal) return;
+
+    let cancelled = false;
+    setLoadingActiveGoal(true);
+    setActiveGoalError("");
+    api<ActiveGoal>("/goal-plans/active")
+      .then((goal) => {
+        if (!cancelled) setActiveGoal(goal);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setActiveGoal(null);
+          setActiveGoalError(error.message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingActiveGoal(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isCalculatedCalorieGoal]);
+
+  useEffect(() => {
+    api<{ goals: DailyGoal[] }>("/daily-goals")
+      .then((res) => setDailyGoals(res.goals))
+      .catch(() => setDailyGoals([]));
+  }, []);
+
+  const updateDailyGoal = (id: string, patch: Partial<DailyGoal>) => {
+    setDailyGoals((current) =>
+      current.map((goal) => (goal.id === id ? { ...goal, ...patch } : goal)),
+    );
+  };
 
   return (
     <section>
@@ -1707,7 +1937,10 @@ function SettingsPage({
                   firstName: settingsForm.firstName,
                   lastName: settingsForm.lastName,
                   proteinGoalG: numberValue(settingsForm.proteinGoalG),
-                  calorieGoalValue: numberValue(settingsForm.calorieGoalValue),
+                  calorieGoalValue:
+                    settingsForm.calorieGoalValue === ""
+                      ? null
+                      : numberValue(settingsForm.calorieGoalValue),
                   calorieGoalType: settingsForm.calorieGoalType,
                   preferredWeightUnit: settingsForm.preferredWeightUnit,
                   timezone: settingsForm.timezone,
@@ -1782,22 +2015,47 @@ function SettingsPage({
                 }
               >
                 <option value="manual">Manual</option>
-                <option value="goal-based">Goal-Based</option>
+                <option value="goal-based">Calculated</option>
               </select>
             </label>
-            <label className="field">
-              <span>Calorie Goal Value</span>
-              <input
-                name="calorieGoalValue"
-                type="number"
-                step="1"
-                value={settingsForm.calorieGoalValue}
-                onChange={(event) =>
-                  updateSettingsField("calorieGoalValue", event.target.value)
-                }
-                placeholder="2000"
-              />
-            </label>
+            {!isCalculatedCalorieGoal && (
+              <label className="field">
+                <span>Calorie Goal Value</span>
+                <input
+                  name="calorieGoalValue"
+                  type="number"
+                  step="1"
+                  value={settingsForm.calorieGoalValue}
+                  onChange={(event) =>
+                    updateSettingsField("calorieGoalValue", event.target.value)
+                  }
+                  placeholder="2000"
+                />
+              </label>
+            )}
+            {isCalculatedCalorieGoal && (
+              <div className="field">
+                <span>Calculated Calorie Goal</span>
+                <strong>
+                  {loadingActiveGoal
+                    ? "Calculating..."
+                    : activeGoal?.calculation
+                      ? `${activeGoal.calculation.targetCalories} calories/day`
+                      : "Not available"}
+                </strong>
+                {!loadingActiveGoal && (
+                  <small>
+                    {activeGoalError ||
+                      (activeGoal?.maintenance?.source ===
+                      "body-weight-fallback"
+                        ? activeGoal.maintenance.message
+                        : null) ||
+                      activeGoal?.message ||
+                      "Based on your active goal, recent weights, and food logs."}
+                  </small>
+                )}
+              </div>
+            )}
           </div>
           <label className="field">
             <span>User timezone</span>
@@ -1822,6 +2080,68 @@ function SettingsPage({
                 ? "Saving..."
                 : "Save settings"
               : "Saved"}
+          </button>
+        </form>
+      </Panel>
+      <Panel title="Daily Goals">
+        <form
+          onSubmit={async (event) => {
+            event.preventDefault();
+            setSavingDailyGoals(true);
+            try {
+              const res = await api<{ goals: DailyGoal[] }>("/daily-goals", {
+                method: "PUT",
+                body: JSON.stringify({ goals: dailyGoals }),
+              });
+              setDailyGoals(res.goals);
+            } finally {
+              setSavingDailyGoals(false);
+            }
+          }}
+        >
+          <div className="daily-goal-settings">
+            {dailyGoals.map((goal) => (
+              <div key={goal.id} className="daily-goal-setting">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={goal.active}
+                    onChange={(event) =>
+                      updateDailyGoal(goal.id, { active: event.target.checked })
+                    }
+                  />
+                  <span>{goal.goalType === "custom" ? "Custom" : goal.label}</span>
+                </label>
+                {goal.goalType === "exercise" && (
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    value={goal.minutes ?? ""}
+                    onChange={(event) =>
+                      updateDailyGoal(goal.id, {
+                        minutes: Number(event.target.value),
+                        label: `Exercise at least ${event.target.value} minutes`,
+                      })
+                    }
+                    aria-label="Exercise minutes"
+                  />
+                )}
+                {goal.goalType === "custom" && (
+                  <input
+                    value={goal.label}
+                    onChange={(event) =>
+                      updateDailyGoal(goal.id, { label: event.target.value })
+                    }
+                    placeholder="Daily goal"
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+          <button disabled={savingDailyGoals}>
+            <Settings size={16} />{" "}
+            {savingDailyGoals ? "Saving..." : "Save daily goals"}
           </button>
         </form>
       </Panel>
@@ -1921,7 +2241,12 @@ function MacroMetric({
     <div className="metric macro-metric">
       <span>{label}</span>
       <strong>{grams}g</strong>
-      <small className={`macro-percent ${macroClass}`}>{percent}%</small>
+      <small
+        className={`macro-percent ${macroClass}`}
+        title={`Percent of macro calories from ${label.toLowerCase()}. Protein and carbs use 4 calories per gram; fat uses 9 calories per gram.`}
+      >
+        {percent}%
+      </small>
     </div>
   );
 }
@@ -2015,6 +2340,101 @@ function Bars({ rows }: { rows: any[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+function WeightBars({ rows }: { rows: any[] }) {
+  if (!rows.length) return <p>No weight entries in range.</p>;
+  const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+  const values = sorted.map((row) => Number(row.value));
+  const minVal = Math.min(...values) - 5;
+  const maxVal = Math.max(...values) + 5;
+  const unit = sorted[0]?.unit ?? "lb";
+  const PAD = { top: 20, right: 20, bottom: 60, left: 55 };
+  const W = 580;
+  const H = 280;
+  const cW = W - PAD.left - PAD.right;
+  const cH = H - PAD.top - PAD.bottom;
+  const xAt = (i: number) =>
+    sorted.length <= 1 ? cW / 2 : (i / (sorted.length - 1)) * cW;
+  const yAt = (v: number) => cH - ((v - minVal) / (maxVal - minVal)) * cH;
+  const range = maxVal - minVal;
+  const step = range <= 15 ? 2 : range <= 30 ? 5 : 10;
+  const yTicks: number[] = [];
+  for (
+    let t = Math.ceil(minVal / step) * step;
+    t <= maxVal;
+    t = Math.round((t + step) * 10) / 10
+  )
+    yTicks.push(t);
+  const pts = sorted.map((row, i) => ({
+    x: xAt(i),
+    y: yAt(Number(row.value)),
+    row,
+  }));
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      style={{ width: "100%", display: "block", overflow: "visible" }}
+    >
+      <g transform={`translate(${PAD.left},${PAD.top})`}>
+        {yTicks.map((tick) => (
+          <g key={tick}>
+            <line
+              x1={0}
+              y1={yAt(tick)}
+              x2={cW}
+              y2={yAt(tick)}
+              stroke="#e4ebe7"
+              strokeWidth={1}
+            />
+            <text
+              x={-8}
+              y={yAt(tick)}
+              textAnchor="end"
+              dominantBaseline="middle"
+              fontSize={11}
+              fill="#63716b"
+            >
+              {tick}
+            </text>
+          </g>
+        ))}
+        <text
+          textAnchor="middle"
+          fontSize={11}
+          fill="#63716b"
+          transform={`translate(-42,${cH / 2}) rotate(-90)`}
+        >
+          {unit}
+        </text>
+        <polyline
+          points={pts.map((p) => `${p.x},${p.y}`).join(" ")}
+          fill="none"
+          stroke="#2563a0"
+          strokeWidth={2}
+          strokeLinejoin="round"
+        />
+        {pts.map(({ x, y, row }) => (
+          <g key={row.date}>
+            <circle cx={x} cy={y} r={4} fill="#2563a0" />
+            <title>
+              {row.date}: {row.value} {unit}
+            </title>
+            <text
+              fontSize={10}
+              fill="#63716b"
+              textAnchor="end"
+              transform={`translate(${x},${cH + 12}) rotate(-45)`}
+            >
+              {row.date.slice(5).replace("-", "/")}
+            </text>
+          </g>
+        ))}
+        <line x1={0} y1={0} x2={0} y2={cH} stroke="#ccc" strokeWidth={1} />
+        <line x1={0} y1={cH} x2={cW} y2={cH} stroke="#ccc" strokeWidth={1} />
+      </g>
+    </svg>
   );
 }
 
