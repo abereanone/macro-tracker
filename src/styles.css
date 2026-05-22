@@ -79,7 +79,9 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
 .login-panel p { color: #5c6a65; }
 .page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
 .page-header span { color: #22614d; display: grid; place-items: center; }
-.toolbar { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; }
+.toolbar { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; flex-wrap: nowrap; }
+.toolbar input[type="date"] { width: 160px; max-width: calc(100vw - 120px); flex: 0 1 160px; }
+.toolbar button { flex: 0 0 auto; }
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .today-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .metric, .panel, .notice {
@@ -91,6 +93,43 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
 .metric span { font-size: 12px; color: #5e6b66; }
 .metric strong { font-size: 24px; line-height: 1.1; }
 .macro-metric small { color: #5e6b66; font-size: 13px; font-weight: 700; }
+.macro-goal {
+  width: fit-content;
+  margin-top: 0.1rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+.macro-goal.remaining,
+.macro-goal.met {
+  color: #166534;
+  background: #dcfce7;
+}
+.macro-goal.neutral {
+  color: #5e6b66;
+  background: #eef3f0;
+}
+.calorie-goal {
+  width: fit-content;
+  margin-top: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+.calorie-goal.remaining {
+  color: #166534;
+  background: #dcfce7;
+}
+.calorie-goal.over {
+  color: #991b1b;
+  background: #fee2e2;
+}
+.calorie-goal.neutral {
+  color: #5e6b66;
+  background: #eef3f0;
+}
 .panel { padding: 16px; margin-bottom: 16px; }
 .panel h2 { margin: 0 0 12px; font-size: 16px; }
 .notice { padding: 12px 14px; margin-bottom: 16px; border-left: 4px solid #c77f2f; }
@@ -135,8 +174,23 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
   gap: 10px;
 }
 .toast span { flex: 1; }
-.goals-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
 .settings-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.settings-save-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.settings-save-row button:disabled {
+  background: #e5ece8;
+  color: #63716b;
+  opacity: 1;
+}
+.success-text {
+  color: #22614d;
+  font-weight: 700;
+}
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .row { display: grid; grid-template-columns: 1fr 120px; gap: 10px; }
 .food-search { display: grid; gap: 8px; }
@@ -190,6 +244,18 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
 .meal-food-search .food-results { max-height: 220px; }
 .list { display: grid; gap: 8px; }
 .list.compact { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.list.compact button {
+  min-height: 58px;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 2px;
+  text-align: left;
+}
+.list.compact button small {
+  color: rgba(255, 255, 255, 0.82);
+  margin: 0;
+}
 .list-row, .table-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -209,7 +275,16 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
   color: #5d7f6b;
 }
 .diary-weight { grid-template-columns: minmax(0, 1fr) auto; }
-.daily-goals { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.diary-goals-block {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #d8e3d9;
+  border-radius: 8px;
+  background: #eef6ec;
+}
+.diary-goals-block > strong { color: #2d5f3f; font-size: 0.9rem; }
+.daily-goals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .daily-goal, .daily-goal-setting label {
   display: flex;
   align-items: center;
@@ -219,6 +294,18 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
   font-size: 0.8rem;
 }
 .daily-goal input, .daily-goal-setting input[type="checkbox"] { width: auto; min-height: auto; }
+.daily-goal {
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid #d8e3d9;
+  border-radius: 8px;
+  background: white;
+}
+.daily-goal:has(input:checked) {
+  border-color: #22614d;
+  color: #1d4034;
+  background: #f5fbf8;
+}
 .daily-goal-settings { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .daily-goal-setting { display: flex; flex-direction: column; gap: 6px; }
 .daily-goal-setting label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
@@ -278,10 +365,9 @@ small { display: block; color: #63716b; margin-top: 4px; }
   .two-col { grid-template-columns: 1fr; }
   .meal-item { grid-template-columns: 1fr 1fr; }
   .meal-food-search { grid-column: 1 / -1; }
-  .toolbar { flex-wrap: wrap; }
+  .toolbar { flex-wrap: nowrap; }
   .list-row { grid-template-columns: 1fr; }
   .diary-weight { grid-template-columns: 1fr; }
-  .goals-row { grid-template-columns: 1fr; }
   .settings-row { grid-template-columns: 1fr 1fr; }
 }
 

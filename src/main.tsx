@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  calculateLoggedNutrition,
+  convertConsumedQuantityToServingQuantity,
+} from "./shared/calculations";
+import {
   Activity,
   BarChart3,
   CalendarDays,
@@ -47,6 +51,13 @@ type MealItem = {
   foodDescription?: string;
   quantity: number;
   quantityUnit: string;
+  servingQuantity?: number;
+  servingUnit?: string;
+  servingGrams?: number | null;
+  proteinG?: number;
+  fatG?: number;
+  carbohydrateG?: number;
+  calories?: number;
 };
 type SavedMeal = {
   id: string;
@@ -110,6 +121,36 @@ const daysAgo = (days: number) => {
   date.setDate(date.getDate() - days);
   return date.toLocaleDateString("en-CA");
 };
+
+function mealItemCalories(item: MealItem) {
+  if (!item.servingQuantity || item.calories == null) return 0;
+  const food = {
+    servingQuantity: item.servingQuantity,
+    servingUnit: item.servingUnit,
+    servingGrams: item.servingGrams ?? null,
+    proteinG: item.proteinG ?? 0,
+    fatG: item.fatG ?? 0,
+    carbohydrateG: item.carbohydrateG ?? 0,
+    calories: item.calories,
+  };
+  try {
+    const servingQuantity = convertConsumedQuantityToServingQuantity(
+      food,
+      item.quantity,
+      item.quantityUnit,
+    );
+    return calculateLoggedNutrition(food, servingQuantity).calories;
+  } catch {
+    return item.calories;
+  }
+}
+
+function savedMealCalories(meal: SavedMeal) {
+  return Math.round(
+    meal.items.reduce((total, item) => total + mealItemCalories(item), 0),
+  );
+}
+
 const timezones = [
   "America/New_York",
   "America/Chicago",
@@ -249,7 +290,7 @@ function App() {
           className={route === "app" ? "active" : ""}
           onClick={() => navigate("app")}
         >
-          <CalendarDays size={18} /> Today
+          <CalendarDays size={18} /> Daily Diary
         </button>
         <button
           className={route === "foods" ? "active" : ""}
@@ -439,6 +480,35 @@ function Dashboard({ user }: { user: User }) {
     user.calorieGoalType === "goal-based"
       ? activeGoal?.calculation?.targetCalories
       : user.calorieGoalValue;
+  const calorieGoalDelta = calorieGoal
+    ? Math.round(calorieGoal - (totals?.calories ?? 0))
+    : null;
+  const calorieGoalStatus =
+    calorieGoalDelta == null
+      ? null
+      : {
+          text:
+            calorieGoalDelta >= 0
+              ? `${calorieGoalDelta} calories remaining`
+              : `${Math.abs(calorieGoalDelta)} calories over goal`,
+          tone: calorieGoalDelta >= 0 ? "remaining" : "over",
+        };
+  const proteinGoalStatus = day?.proteinGoal
+    ? {
+        text: day.proteinGoal.met
+          ? `Protein goal met: ${Math.round(day.proteinGoal.actualG)}g of ${Math.round(day.proteinGoal.goalG)}g`
+          : `${Math.round(day.proteinGoal.remainingG)}g protein remaining`,
+        tone: day.proteinGoal.met ? "met" : "remaining",
+      }
+    : { text: "Add a protein goal in settings.", tone: "neutral" };
+  const calorieGoalTooltip = activeGoal?.plan
+    ? [
+        `Current goal: ${activeGoal.plan.goal_weight_value} ${activeGoal.plan.goal_weight_unit} by ${activeGoal.plan.target_date}`,
+        activeGoal.goalPace
+          ? `Needed average: ${activeGoal.goalPace.direction === "maintain" ? "maintain weight" : `${activeGoal.goalPace.direction} ${Math.abs(activeGoal.goalPace.weeklyChangeLb)} lb/week`} from ${activeGoal.goalPace.latestWeight.value} ${activeGoal.goalPace.latestWeight.unit} on ${activeGoal.goalPace.latestWeight.date}.`
+          : "Add a current weight to calculate the weekly pace needed.",
+      ].join("\n")
+    : undefined;
   const savedWeightValue = day?.weight ? String(day.weight.weight_value) : "";
   const savedWeightUnit = day?.weight?.weight_unit ?? user.preferredWeightUnit;
   const weightChanged =
@@ -464,7 +534,7 @@ function Dashboard({ user }: { user: User }) {
           </button>
         </div>
       )}
-      <Header title="Today" icon={<CalendarDays />} />
+      <Header title="Daily Diary" icon={<CalendarDays />} />
       <div className="toolbar">
         <input
           type="date"
@@ -473,65 +543,6 @@ function Dashboard({ user }: { user: User }) {
         />
         <button onClick={() => setDate(today())}>Today</button>
       </div>
-      {totals && (
-        <div className="metric-grid today-metrics">
-          <MacroMetric
-            label="Protein"
-            grams={totals.proteinG}
-            percent={totals.proteinPercent}
-          />
-          <MacroMetric
-            label="Fat"
-            grams={totals.fatG}
-            percent={totals.fatPercent}
-          />
-          <MacroMetric
-            label="Carbs"
-            grams={totals.carbohydrateG}
-            percent={totals.carbohydratePercent}
-          />
-          <Metric label="Calories" value={Math.round(totals.calories)} />
-        </div>
-      )}
-      <div className="goals-row">
-        <div className={day?.proteinGoal?.met ? "notice success" : "notice"}>
-          {day?.proteinGoal
-            ? day.proteinGoal.met
-              ? `Protein goal met: ${day.proteinGoal.actualG}g of ${day.proteinGoal.goalG}g`
-              : `${Math.round(day.proteinGoal.remainingG)}g protein remaining (${Math.round(day.proteinGoal.remainingG * 4)} calories from protein)`
-            : "Add a protein goal in settings."}
-        </div>
-        <div
-          className={
-            calorieGoal && totals?.calories >= calorieGoal
-              ? "notice success calories"
-              : "notice calories"
-          }
-        >
-          {calorieGoal
-            ? (totals?.calories ?? 0) >= calorieGoal
-              ? `Calorie goal met: ${Math.round(totals?.calories ?? 0)} of ${calorieGoal} cal`
-              : `${Math.round(calorieGoal - (totals?.calories ?? 0))} calories remaining`
-            : "Add a calorie goal in settings."}
-        </div>
-      </div>
-      {activeGoal?.plan && (
-        <div className="notice goal-summary">
-          <div>
-            Current goal:{" "}
-            <strong>
-              {activeGoal.plan.goal_weight_value}{" "}
-              {activeGoal.plan.goal_weight_unit}
-            </strong>{" "}
-            by <strong>{activeGoal.plan.target_date}</strong>
-          </div>
-          <div>
-            {activeGoal.goalPace
-              ? `Needed average: ${activeGoal.goalPace.direction === "maintain" ? "maintain weight" : `${activeGoal.goalPace.direction} ${Math.abs(activeGoal.goalPace.weeklyChangeLb)} lb/week`} from ${activeGoal.goalPace.latestWeight.value} ${activeGoal.goalPace.latestWeight.unit} on ${activeGoal.goalPace.latestWeight.date}.`
-              : "Add a current weight to calculate the weekly pace needed."}
-          </div>
-        </div>
-      )}
       <div className="two-col">
         <Panel title="Log Food">
           <form
@@ -657,12 +668,49 @@ function Dashboard({ user }: { user: User }) {
                   load();
                 }}
               >
-                {meal.name}
+                <span>{meal.name}</span>
+                <small>{savedMealCalories(meal)}cal</small>
               </button>
             ))}
           </div>
         </Panel>
       </div>
+      {totals && (
+        <div className="metric-grid today-metrics">
+          <MacroMetric
+            label="Protein"
+            grams={totals.proteinG}
+            percent={totals.proteinPercent}
+            goalStatus={proteinGoalStatus}
+          />
+          <MacroMetric
+            label="Fat"
+            grams={totals.fatG}
+            percent={totals.fatPercent}
+          />
+          <MacroMetric
+            label="Carbs"
+            grams={totals.carbohydrateG}
+            percent={totals.carbohydratePercent}
+          />
+          <div className="metric calorie-metric">
+            <span>Calories</span>
+            <strong>{Math.round(totals.calories)}</strong>
+            {calorieGoalStatus ? (
+              <small
+                className={`calorie-goal ${calorieGoalStatus.tone}`}
+                title={calorieGoalTooltip}
+              >
+                {calorieGoalStatus.text}
+              </small>
+            ) : (
+              <small className="calorie-goal neutral">
+                Add a calorie goal in settings.
+              </small>
+            )}
+          </div>
+        </div>
+      )}
       <Panel title={`Diary for ${date}`}>
         <div className="list">
           <div className="list-row diary-weight">
@@ -720,34 +768,31 @@ function Dashboard({ user }: { user: User }) {
             </form>
           </div>
           {day?.dailyGoals?.length > 0 && (
-            <div className="daily-goals">
-              {day.dailyGoals.map((goal: DailyGoal) => (
-                <label key={goal.id} className="daily-goal">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(goal.completed)}
-                    onChange={async (event) => {
-                      await api("/daily-goal-completions", {
-                        method: "POST",
-                        body: JSON.stringify({
-                          goalId: goal.id,
-                          entryDate: date,
-                          completed: event.target.checked,
-                        }),
-                      });
-                      setPopupMessage("Changes saved");
-                      load();
-                    }}
-                  />
-                  <span>
-                    {goal.goalType === "move"
-                      ? `Move > ${goal.minutes ?? 10} mins`
-                      : goal.goalType === "exercise"
-                        ? `Exercise > ${goal.minutes ?? 30} mins`
-                        : goal.label}
-                  </span>
-                </label>
-              ))}
+            <div className="diary-goals-block">
+              <strong>Daily diary goals</strong>
+              <div className="daily-goals">
+                {day.dailyGoals.map((goal: DailyGoal) => (
+                  <label key={goal.id} className="daily-goal">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(goal.completed)}
+                      onChange={async (event) => {
+                        await api("/daily-goal-completions", {
+                          method: "POST",
+                          body: JSON.stringify({
+                            goalId: goal.id,
+                            entryDate: date,
+                            completed: event.target.checked,
+                          }),
+                        });
+                        setPopupMessage("Changes saved");
+                        load();
+                      }}
+                    />
+                    <span>{dailyGoalLabel(goal)}</span>
+                  </label>
+                ))}
+              </div>
             </div>
           )}
           {day?.items?.map((item: any) => (
@@ -801,6 +846,13 @@ function MealLabelPicker({
       ))}
     </div>
   );
+}
+
+function dailyGoalLabel(goal: DailyGoal) {
+  if (goal.goalType === "move") return `Movement ${goal.minutes ?? 10} min`;
+  if (goal.goalType === "exercise") return `Workout ${goal.minutes ?? 30} min`;
+  if (goal.goalType === "supplements") return "Supplements";
+  return goal.label;
 }
 
 function Foods({ user }: { user: User }) {
@@ -1855,6 +1907,18 @@ function getSettingsForm(user: User): SettingsForm {
   };
 }
 
+function dailyGoalsSnapshot(goals: DailyGoal[]) {
+  return JSON.stringify(
+    goals.map((goal) => ({
+      id: goal.id,
+      label: goal.label,
+      goalType: goal.goalType,
+      minutes: goal.minutes,
+      active: goal.active,
+    })),
+  );
+}
+
 function SettingsPage({
   user,
   setUser,
@@ -1868,6 +1932,7 @@ function SettingsPage({
   const [deleteMessage, setDeleteMessage] = useState("");
   const [settingsForm, setSettingsForm] = useState(() => getSettingsForm(user));
   const [savingSettings, setSavingSettings] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
   const savedSettingsForm = useMemo(() => getSettingsForm(user), [user]);
   const settingsChanged = useMemo(
     () => JSON.stringify(settingsForm) !== JSON.stringify(savedSettingsForm),
@@ -1879,6 +1944,7 @@ function SettingsPage({
   }, [user]);
 
   const updateSettingsField = (field: keyof SettingsForm, value: string) => {
+    setSaveMessage("");
     setSettingsForm((current) => ({ ...current, [field]: value }));
   };
   const isCalculatedCalorieGoal =
@@ -1887,8 +1953,14 @@ function SettingsPage({
   const [activeGoalError, setActiveGoalError] = useState("");
   const [loadingActiveGoal, setLoadingActiveGoal] = useState(false);
   const [dailyGoals, setDailyGoals] = useState<DailyGoal[]>([]);
-  const [savingDailyGoals, setSavingDailyGoals] = useState(false);
+  const [savedDailyGoals, setSavedDailyGoals] = useState<DailyGoal[]>([]);
   const [newGoalLabel, setNewGoalLabel] = useState("");
+  const dailyGoalsChanged = useMemo(
+    () => dailyGoalsSnapshot(dailyGoals) !== dailyGoalsSnapshot(savedDailyGoals),
+    [dailyGoals, savedDailyGoals],
+  );
+  const canSaveSettings =
+    (settingsChanged || dailyGoalsChanged) && !savingSettings;
 
   useEffect(() => {
     if (!isCalculatedCalorieGoal) return;
@@ -1917,47 +1989,66 @@ function SettingsPage({
 
   useEffect(() => {
     api<{ goals: DailyGoal[] }>("/daily-goals")
-      .then((res) => setDailyGoals(res.goals))
-      .catch(() => setDailyGoals([]));
+      .then((res) => {
+        setDailyGoals(res.goals);
+        setSavedDailyGoals(res.goals);
+      })
+      .catch(() => {
+        setDailyGoals([]);
+        setSavedDailyGoals([]);
+      });
   }, []);
 
   const updateDailyGoal = (id: string, patch: Partial<DailyGoal>) => {
+    setSaveMessage("");
     setDailyGoals((current) =>
       current.map((goal) => (goal.id === id ? { ...goal, ...patch } : goal)),
     );
   };
 
+  async function saveSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSaveSettings) return;
+    setSavingSettings(true);
+    setSaveMessage("");
+    try {
+      if (settingsChanged) {
+        const res = await api<{ user: User }>("/me/settings", {
+          method: "PUT",
+          body: JSON.stringify({
+            firstName: settingsForm.firstName,
+            lastName: settingsForm.lastName,
+            proteinGoalG: numberValue(settingsForm.proteinGoalG),
+            calorieGoalValue:
+              settingsForm.calorieGoalValue === ""
+                ? null
+                : numberValue(settingsForm.calorieGoalValue),
+            calorieGoalType: settingsForm.calorieGoalType,
+            preferredWeightUnit: settingsForm.preferredWeightUnit,
+            timezone: settingsForm.timezone,
+          }),
+        });
+        setUser(res.user);
+      }
+      if (dailyGoalsChanged) {
+        const res = await api<{ goals: DailyGoal[] }>("/daily-goals", {
+          method: "PUT",
+          body: JSON.stringify({ goals: dailyGoals }),
+        });
+        setDailyGoals(res.goals);
+        setSavedDailyGoals(res.goals);
+      }
+      setSaveMessage("Settings saved.");
+    } finally {
+      setSavingSettings(false);
+    }
+  }
+
   return (
     <section>
       <Header title="Settings" icon={<Settings />} />
-      <Panel title="User Settings">
-        <form
-          onSubmit={async (event) => {
-            event.preventDefault();
-            if (!settingsChanged || savingSettings) return;
-            setSavingSettings(true);
-            try {
-              const res = await api<{ user: User }>("/me/settings", {
-                method: "PUT",
-                body: JSON.stringify({
-                  firstName: settingsForm.firstName,
-                  lastName: settingsForm.lastName,
-                  proteinGoalG: numberValue(settingsForm.proteinGoalG),
-                  calorieGoalValue:
-                    settingsForm.calorieGoalValue === ""
-                      ? null
-                      : numberValue(settingsForm.calorieGoalValue),
-                  calorieGoalType: settingsForm.calorieGoalType,
-                  preferredWeightUnit: settingsForm.preferredWeightUnit,
-                  timezone: settingsForm.timezone,
-                }),
-              });
-              setUser(res.user);
-            } finally {
-              setSavingSettings(false);
-            }
-          }}
-        >
+      <form onSubmit={saveSettings}>
+        <Panel title="User Settings">
           <div className="settings-row">
             <label className="field">
               <span>First name</span>
@@ -2079,32 +2170,8 @@ function SettingsPage({
               ))}
             </select>
           </label>
-          <button disabled={!settingsChanged || savingSettings}>
-            <Settings size={16} />{" "}
-            {settingsChanged
-              ? savingSettings
-                ? "Saving..."
-                : "Save settings"
-              : "Saved"}
-          </button>
-        </form>
-      </Panel>
-      <Panel title="Daily Goals | Customize the goals you want to track in your diary.">
-        <form
-          onSubmit={async (event) => {
-            event.preventDefault();
-            setSavingDailyGoals(true);
-            try {
-              const res = await api<{ goals: DailyGoal[] }>("/daily-goals", {
-                method: "PUT",
-                body: JSON.stringify({ goals: dailyGoals }),
-              });
-              setDailyGoals(res.goals);
-            } finally {
-              setSavingDailyGoals(false);
-            }
-          }}
-        >
+        </Panel>
+        <Panel title="Daily Goals | Customize the goals you want to track in your diary.">
           <div className="daily-goal-settings">
             {dailyGoals.map((goal) => (
               <div key={goal.id} className="daily-goal-setting">
@@ -2116,7 +2183,9 @@ function SettingsPage({
                       updateDailyGoal(goal.id, { active: event.target.checked })
                     }
                   />
-                  <span>{goal.goalType === "custom" ? "Custom" : goal.label}</span>
+                  <span>
+                    {goal.goalType === "custom" ? "Custom" : dailyGoalLabel(goal)}
+                  </span>
                 </label>
                 {goal.goalType === "move" && (
                   <input
@@ -2127,7 +2196,7 @@ function SettingsPage({
                     onChange={(event) =>
                       updateDailyGoal(goal.id, {
                         minutes: Number(event.target.value),
-                        label: `Move for ${event.target.value} minutes`,
+                        label: "Movement",
                       })
                     }
                     aria-label="Move minutes"
@@ -2142,7 +2211,7 @@ function SettingsPage({
                     onChange={(event) =>
                       updateDailyGoal(goal.id, {
                         minutes: Number(event.target.value),
-                        label: `Exercise for ${event.target.value} minutes`,
+                        label: "Workout",
                       })
                     }
                     aria-label="Exercise minutes"
@@ -2162,7 +2231,10 @@ function SettingsPage({
             <div className="daily-goal-setting">
               <input
                 value={newGoalLabel}
-                onChange={(event) => setNewGoalLabel(event.target.value)}
+                onChange={(event) => {
+                  setSaveMessage("");
+                  setNewGoalLabel(event.target.value);
+                }}
                 placeholder="Add custom goal..."
               />
               <button
@@ -2170,9 +2242,16 @@ function SettingsPage({
                 className="ghost"
                 disabled={!newGoalLabel.trim()}
                 onClick={() => {
+                  setSaveMessage("");
                   setDailyGoals((current) => [
                     ...current,
-                    { id: "", label: newGoalLabel.trim(), goalType: "custom", minutes: null, active: true },
+                    {
+                      id: "",
+                      label: newGoalLabel.trim(),
+                      goalType: "custom",
+                      minutes: null,
+                      active: true,
+                    },
                   ]);
                   setNewGoalLabel("");
                 }}
@@ -2181,12 +2260,19 @@ function SettingsPage({
               </button>
             </div>
           </div>
-          <button disabled={savingDailyGoals}>
+        </Panel>
+        <div className="settings-save-row">
+          <button disabled={!canSaveSettings}>
             <Settings size={16} />{" "}
-            {savingDailyGoals ? "Saving..." : "Save daily goals"}
+            {savingSettings
+              ? "Saving..."
+              : canSaveSettings
+                ? "Save Settings"
+                : "Saved"}
           </button>
-        </form>
-      </Panel>
+          {saveMessage && <span className="success-text">{saveMessage}</span>}
+        </div>
+      </form>
       <Panel title="Danger Zone">
         <button
           className="danger-button"
@@ -2272,10 +2358,12 @@ function MacroMetric({
   label,
   grams,
   percent,
+  goalStatus,
 }: {
   label: string;
   grams: number;
   percent: number;
+  goalStatus?: { text: string; tone: string };
 }) {
   const macroClass = label.toLowerCase();
 
@@ -2289,6 +2377,11 @@ function MacroMetric({
       >
         {percent}%
       </small>
+      {goalStatus && (
+        <small className={`macro-goal ${goalStatus.tone}`}>
+          {goalStatus.text}
+        </small>
+      )}
     </div>
   );
 }

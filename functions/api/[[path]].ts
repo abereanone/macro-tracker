@@ -1056,11 +1056,13 @@ async function ensureDailyGoalDefaults(ctx: Ctx, user: DbUser) {
     .bind(user.id)
     .all<{ goal_type: string }>();
   const types = new Set(existing.results.map((row) => row.goal_type));
+  const needsDiaryGoalUpgrade = !types.has('supplements');
   const defaults = [
-    { type: 'move', label: 'Move for 10 minutes', minutes: 10, active: 0, sort: 0 },
-    { type: 'exercise', label: 'Exercise for 30 minutes', minutes: 30, active: 0, sort: 1 },
-    { type: 'sunlight', label: 'Get morning sunlight', minutes: null, active: 0, sort: 2 },
-    { type: 'custom', label: 'Enter your own goal', minutes: null, active: 0, sort: 3 },
+    { type: 'move', label: 'Movement', minutes: 10, active: 1, sort: 0 },
+    { type: 'exercise', label: 'Workout', minutes: 30, active: 1, sort: 1 },
+    { type: 'supplements', label: 'Supplements', minutes: null, active: 1, sort: 2 },
+    { type: 'sunlight', label: 'Get morning sunlight', minutes: null, active: 0, sort: 3 },
+    { type: 'custom', label: 'Enter your own goal', minutes: null, active: 0, sort: 4 },
   ];
   for (const goal of defaults) {
     if (types.has(goal.type)) continue;
@@ -1068,6 +1070,13 @@ async function ensureDailyGoalDefaults(ctx: Ctx, user: DbUser) {
       'INSERT INTO daily_goal_definitions (id, user_id, label, goal_type, minutes, active, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)',
     )
       .bind(id(), user.id, goal.label, goal.type, goal.minutes, goal.active, goal.sort)
+      .run();
+  }
+  if (needsDiaryGoalUpgrade) {
+    await ctx.env.DB.prepare(
+      "UPDATE daily_goal_definitions SET active = 1, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND goal_type IN ('move', 'exercise', 'supplements')",
+    )
+      .bind(user.id)
       .run();
   }
 }
