@@ -1693,47 +1693,54 @@ function Goals() {
       {activePlan?.plan && (
         <Panel title="Current Goal">
           <p>
-            Goal:{" "}
-            <strong>
-              {activePlan.plan.goal_weight_value}{" "}
-              {activePlan.plan.goal_weight_unit}
-            </strong>{" "}
-            by <strong>{activePlan.plan.target_date}</strong>
+            <strong>Goal:</strong>{" "}
+            {activePlan.plan.goal_weight_value}{" "}
+            {activePlan.plan.goal_weight_unit} by{" "}
+            {activePlan.plan.target_date}
           </p>
-          <p>
-            {activePlan.goalPace
-              ? `Needed average: ${activePlan.goalPace.direction === "maintain" ? "maintain weight" : `${activePlan.goalPace.direction} ${Math.abs(activePlan.goalPace.weeklyChangeLb)} lb/week`} from ${activePlan.goalPace.latestWeight.value} ${activePlan.goalPace.latestWeight.unit} on ${activePlan.goalPace.latestWeight.date}.`
-              : "Add a current weight to calculate the weekly pace needed."}
-          </p>
+          {activePlan.goalPace ? (
+            activePlan.goalPace.direction === "maintain" ? (
+              <p>You need to maintain weight to achieve this goal.</p>
+            ) : (
+              <p>
+                You need to {activePlan.goalPace.direction}{" "}
+                {Math.abs(activePlan.goalPace.weeklyChangeLb)} lb/week to
+                achieve this goal
+                {calculation
+                  ? ` which means a daily calorie deficit of ${calculation.dailyAdjustment}.`
+                  : "."}
+              </p>
+            )
+          ) : (
+            <p>Add a current weight to calculate the weekly pace needed.</p>
+          )}
           {maintenance && (
             <div className="calculation-work">
               <strong className="highlight-stat">
-                Calculated maintenance: {maintenance.maintenanceCalories}{" "}
+                Your maintenance calories: {maintenance.maintenanceCalories}{" "}
                 calories/day
               </strong>
               {maintenance.source === "weigh-in" ? (
                 <>
                   <span>
-                    Maintenance uses {maintenance.days} days from{" "}
-                    {maintenance.start} to {maintenance.end}; diary calories
-                    included {maintenance.calorieStart} through{" "}
-                    {maintenance.calorieEnd}.
-                  </span>
-                  <span>
-                    Average logged intake:{" "}
+                    This is calculated by taking the available data from the
+                    last two weeks which shows an average logged intake of{" "}
                     {Math.round(maintenance.averageLoggedCalories ?? 0)}{" "}
-                    calories/day across {maintenance.loggedDayCount} logged
-                    days.
+                    calories/day for {maintenance.loggedDayCount} of those days.
                   </span>
                   <span>
-                    Weight change: {maintenance.weightChangeLb} lb, so the
-                    daily weight adjustment is{" "}
-                    {Math.round(maintenance.dailyWeightAdjustment ?? 0)}{" "}
-                    calories/day.
+                    Your weight changed {maintenance.weightChangeLb} lb. This
+                    means you had a {maintenance.weightChangeLb < 0 ? "deficit" : "overage"} of{" "}
+                    {Math.round(
+                      Math.abs(maintenance.dailyWeightAdjustment ?? 0),
+                    )}{" "}
+                    calories/day over that period.
                   </span>
                   <span>
-                    Math: {Math.round(maintenance.averageLoggedCalories ?? 0)} -
-                    ({maintenance.weightChangeLb} x 3500 / {maintenance.days}) ={" "}
+                    Thus, the number of calories you needed to stay the same
+                    weight was{" "}
+                    {Math.round(maintenance.averageLoggedCalories ?? 0)} - (
+                    {maintenance.weightChangeLb} x 3500 / {maintenance.days}) ={" "}
                     {maintenance.maintenanceCalories} calories/day.
                   </span>
                 </>
@@ -1743,16 +1750,12 @@ function Goals() {
               {calculation && (
                 <>
                   <strong className="highlight-stat">
-                    Daily calorie goal: {calculation.targetCalories}{" "}
-                    calories/day
+                    Your daily calorie goal then is{" "}
+                    {calculation.targetCalories} calories/day.
                   </strong>
                   <span>
-                    Goal adjustment: {Math.abs(calculation.weightChangeLb)} lb x
-                    3500 / {calculation.days} days ={" "}
-                    {calculation.dailyAdjustment} calories/day.
-                  </span>
-                  <span>
-                    Math: {maintenance.maintenanceCalories}{" "}
+                    This is just your maintenance calories minus your needed
+                    deficit, or {maintenance.maintenanceCalories}{" "}
                     {calculation.weightChangeLb < 0 ? "-" : "+"}{" "}
                     {calculation.dailyAdjustment} ={" "}
                     {calculation.targetCalories} calories/day.
