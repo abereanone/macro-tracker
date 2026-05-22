@@ -805,7 +805,7 @@ function Dashboard({ user }: { user: User }) {
                 </small>
               </span>
               <span>
-                {Math.round(item.calories)}cal · {Math.round(item.protein_g)}P
+                {Math.round(item.calories)}cal · {Math.round(item.protein_g)}P {Math.round(item.fat_g)}F {Math.round(item.carbohydrate_g)}C
               </span>
               <button
                 className="ghost"
@@ -1055,7 +1055,7 @@ function FoodForm({
         <span>Food name</span>
         <input
           name="description"
-          placeholder="Chicken breast, cooked"
+          placeholder="enter a food"
           value={description}
           onChange={(event) => setDescription(event.target.value)}
           required
@@ -1068,7 +1068,7 @@ function FoodForm({
             name="servingQuantity"
             type="number"
             step="0.01"
-            placeholder="100"
+            placeholder=""
             value={servingQuantity}
             onChange={(event) => setServingQuantity(event.target.value)}
             required
@@ -1424,7 +1424,7 @@ function MealForm({
     >
       <input
         name="name"
-        placeholder="Breakfast eggs and sausage"
+        placeholder="For example: 2 eggs, 4oz sausage"
         value={name}
         onChange={(event) => setName(event.target.value)}
         required
@@ -1478,6 +1478,11 @@ function MealForm({
             >
               Remove
             </button>
+            {item.foodId && item.proteinG != null && (
+              <small className="meal-item-info">
+                {Math.round(item.calories ?? 0)}cal · {Math.round(item.proteinG ?? 0)}P {Math.round(item.fatG ?? 0)}F {Math.round(item.carbohydrateG ?? 0)}C
+              </small>
+            )}
           </div>
         ))}
       </div>
@@ -1574,6 +1579,12 @@ function MealFoodPicker({
                   foodId: food.id,
                   foodDescription: food.description,
                   quantityUnit: food.servingUnit,
+                  servingQuantity: food.servingQuantity,
+                  servingGrams: food.servingGrams,
+                  proteinG: food.proteinG,
+                  fatG: food.fatG,
+                  carbohydrateG: food.carbohydrateG,
+                  calories: food.calories,
                 });
               }}
             >
@@ -1586,6 +1597,14 @@ function MealFoodPicker({
             </button>
           ))}
         </div>
+      )}
+      {item.foodId && (
+        <div className="selected-food">
+          Selected: <strong>{item.foodDescription}</strong>
+        </div>
+      )}
+      {item.foodId && item.servingQuantity != null && (
+        <small>Food serving: {item.servingQuantity}{item.servingUnit}</small>
       )}
     </div>
   );
@@ -2097,7 +2116,7 @@ function SettingsPage({
                 onChange={(event) =>
                   updateSettingsField("proteinGoalG", event.target.value)
                 }
-                placeholder="160"
+                placeholder=""
               />
             </label>
           </div>
@@ -2126,7 +2145,7 @@ function SettingsPage({
                   onChange={(event) =>
                     updateSettingsField("calorieGoalValue", event.target.value)
                   }
-                  placeholder="2000"
+                  placeholder=""
                 />
               </label>
             )}
