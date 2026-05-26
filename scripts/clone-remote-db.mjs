@@ -17,6 +17,11 @@ const truncateSql = join(tmpDir, `${dbName}-truncate-local.sql`);
 const countSql = join(tmpDir, `${dbName}-counts.sql`);
 
 const tablesInDeleteOrder = [
+  "daily_goal_completions",
+  "daily_goal_definitions",
+  "user_maintenance_snapshots",
+  "auth_sessions",
+  "auth_login_codes",
   "saved_meal_items",
   "diary_items",
   "weight_entries",
@@ -29,12 +34,17 @@ const tablesInDeleteOrder = [
 
 const tablesInCountOrder = [
   "users",
+  "auth_login_codes",
+  "auth_sessions",
   "foods",
   "diary_items",
   "saved_meals",
   "saved_meal_items",
   "weight_entries",
   "goal_plans",
+  "user_maintenance_snapshots",
+  "daily_goal_definitions",
+  "daily_goal_completions",
   "d1_migrations",
 ];
 

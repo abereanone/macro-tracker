@@ -1663,11 +1663,11 @@ function Reports() {
           </p>
         ) : null}
       </Panel>
-      <Panel title="Calories by Day">
-        <Bars rows={summary?.days ?? []} />
-      </Panel>
       <Panel title="Weight by Day">
         <WeightBars rows={summary?.weights ?? []} />
+      </Panel>
+      <Panel title="Calories by Day">
+        <Bars rows={summary?.days ?? []} />
       </Panel>
     </section>
   );
@@ -1729,8 +1729,9 @@ function Goals() {
                     calories/day for {maintenance.loggedDayCount} of those days.
                   </span>
                   <span>
-                    Your weight changed {maintenance.weightChangeLb} lb. This
-                    means you had a {maintenance.weightChangeLb < 0 ? "deficit" : "overage"} of{" "}
+                    Your weight changed {maintenance.weightChangeLb} lb, implying
+                    a daily {maintenance.weightChangeLb < 0 ? "deficit" : "surplus"} of |
+                    {maintenance.weightChangeLb} × 3500 / {maintenance.days}| ={" "}
                     {Math.round(
                       Math.abs(maintenance.dailyWeightAdjustment ?? 0),
                     )}{" "}
@@ -2504,8 +2505,8 @@ function WeightBars({ rows }: { rows: any[] }) {
   if (!rows.length) return <p>No weight entries in range.</p>;
   const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
   const values = sorted.map((row) => Number(row.value));
-  const minVal = Math.min(...values) - 5;
-  const maxVal = Math.max(...values) + 5;
+  const minVal = Math.min(...values) - 2;
+  const maxVal = Math.max(...values) + 2;
   const unit = sorted[0]?.unit ?? "lb";
   const PAD = { top: 20, right: 20, bottom: 60, left: 55 };
   const W = 580;
