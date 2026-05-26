@@ -12,7 +12,7 @@ import {
   requireWeightUnit,
 } from '../../src/shared/validation';
 
-type Env = { DB: D1Database; RESEND_API_KEY: string };
+type Env = { DB: D1Database; RESEND_API_KEY: string; DEV_AUTH_BYPASS?: string };
 type Ctx = EventContext<Env, string, { path?: string[] }>;
 type DbUser = {
   id: string;
@@ -75,6 +75,8 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     if (method === 'OPTIONS') return json({ ok: true });
     if (method === 'POST' && path === '/auth/request-code') return requestLoginCode(ctx);
     if (method === 'POST' && path === '/auth/verify-code') return verifyLoginCode(ctx);
+    if (method === 'GET' && path === '/auth/dev-users') return listDevUsers(ctx);
+    if (method === 'POST' && path === '/auth/dev-login') return devLogin(ctx);
     if (method === 'POST' && path === '/auth/logout') return logout(ctx);
 
     const user = await requireUser(ctx);
@@ -211,6 +213,12 @@ function clearSessionCookie() {
   return `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
 }
 
+function requireDevAuthBypass(ctx: Ctx) {
+  if (String(ctx.env.DEV_AUTH_BYPASS ?? '').trim().toLowerCase() !== 'true') {
+    throw new ApiError('NOT_FOUND', 'Not found.', 404);
+  }
+}
+
 function getCookie(request: Request, name: string) {
   const cookies = request.headers.get('cookie') ?? '';
   return cookies
@@ -296,20 +304,53 @@ async function verifyLoginCode(ctx: Ctx) {
 
   await ctx.env.DB.prepare('UPDATE auth_login_codes SET used_at = ? WHERE id = ?').bind(nowIso(), challenge.id).run();
 
+  const user = await findOrCreateUserByEmail(ctx, email);
+  return createSessionResponse(ctx, user);
+}
+
+async function devLogin(ctx: Ctx) {
+  requireDevAuthBypass(ctx);
+  const input = await body(ctx);
+  const email = requireEmail(input.email);
+  const user = await findOrCreateUserByEmail(ctx, email);
+  return createSessionResponse(ctx, user);
+}
+
+async function listDevUsers(ctx: Ctx) {
+  requireDevAuthBypass(ctx);
+  const users = await ctx.env.DB.prepare(
+    'SELECT id, email, first_name, last_name FROM users ORDER BY email LIMIT 100',
+  ).all<Pick<DbUser, 'id' | 'email' | 'first_name' | 'last_name'>>();
+  return json({
+    ok: true,
+    users: users.results.map((user) => ({
+      id: user.id,
+      email: user.email,
+      name: [user.first_name, user.last_name].filter(Boolean).join(' ') || user.email,
+    })),
+  });
+}
+
+async function findOrCreateUserByEmail(ctx: Ctx, email: string) {
   let user = await ctx.env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<DbUser>();
   if (!user) {
     const userId = id();
     await ctx.env.DB.prepare('INSERT INTO users (id, email) VALUES (?, ?)').bind(userId, email).run();
     user = await ctx.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first<DbUser>();
   }
+  if (!user) throw new ApiError('SERVER_ERROR', 'Could not create user.', 500);
+  return user;
+}
+
+async function createSessionResponse(ctx: Ctx, user: DbUser) {
   const token = randomToken();
   await ctx.env.DB.prepare(
     'INSERT INTO auth_sessions (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)',
   )
-    .bind(id(), user!.id, await sha256(token), futureIso(sessionExpiresMs))
+    .bind(id(), user.id, await sha256(token), futureIso(sessionExpiresMs))
     .run();
   return json(
-    { ok: true, user: mapUser(user!) },
+    { ok: true, user: mapUser(user) },
     { headers: { 'set-cookie': sessionCookie(ctx.request, token, Math.floor(sessionExpiresMs / 1000)) } },
   );
 }

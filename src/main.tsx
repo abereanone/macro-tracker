@@ -103,6 +103,11 @@ type DailyGoal = {
   active: boolean;
   completed?: boolean;
 };
+type LocalUserOption = {
+  id: string;
+  email: string;
+  name: string;
+};
 
 const routes = [
   "app",
@@ -243,6 +248,15 @@ function App() {
     navigate("app");
   }
 
+  async function devLogin(email: string) {
+    const res = await api<{ ok: boolean; user: User }>("/auth/dev-login", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+    setUser(res.user);
+    navigate("app");
+  }
+
   async function logout() {
     await api("/auth/logout", { method: "POST", body: "{}" });
     setUser(null);
@@ -254,6 +268,7 @@ function App() {
       <Login
         onRequestCode={requestLoginCode}
         onVerifyCode={verifyLoginCode}
+        onDevLogin={devLogin}
         message={message}
         setMessage={setMessage}
       />
@@ -332,11 +347,13 @@ function App() {
 function Login({
   onRequestCode,
   onVerifyCode,
+  onDevLogin,
   message,
   setMessage,
 }: {
   onRequestCode: (email: string) => Promise<void>;
   onVerifyCode: (email: string, code: string) => Promise<void>;
+  onDevLogin: (email: string) => Promise<void>;
   message: string;
   setMessage: (message: string) => void;
 }) {
@@ -344,6 +361,24 @@ function Login({
   const [code, setCode] = useState("");
   const [codeSent, setCodeSent] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [devAuthAvailable, setDevAuthAvailable] = useState(false);
+  const [devUsers, setDevUsers] = useState<LocalUserOption[]>([]);
+  const localDevHost = ["localhost", "127.0.0.1", "::1"].includes(
+    window.location.hostname,
+  );
+
+  useEffect(() => {
+    if (!localDevHost) return;
+    api<{ ok: boolean; users: LocalUserOption[] }>("/auth/dev-users")
+      .then((res) => {
+        setDevUsers(res.users);
+        setDevAuthAvailable(true);
+      })
+      .catch(() => {
+        setDevUsers([]);
+        setDevAuthAvailable(false);
+      });
+  }, [localDevHost]);
 
   return (
     <main className="login-page">
@@ -369,6 +404,25 @@ function Login({
       >
         <h1>Macro Tracker</h1>
         <p>{codeSent ? `Enter the code sent to ${email}.` : "Enter your email to get a 6 digit login code."}</p>
+        {devAuthAvailable && devUsers.length > 0 && !codeSent && (
+          <label className="field">
+            <span>Local user</span>
+            <select
+              value={devUsers.some((user) => user.email === email) ? email : ""}
+              onChange={(event) => setEmail(event.target.value)}
+              disabled={submitting}
+            >
+              <option value="">Choose a local user</option>
+              {devUsers.map((user) => (
+                <option key={user.id} value={user.email}>
+                  {user.name === user.email
+                    ? user.email
+                    : `${user.name} (${user.email})`}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <input
           name="email"
           type="email"
@@ -402,6 +456,30 @@ function Login({
               ? "Verify code"
               : "Send code"}
         </button>
+        {devAuthAvailable && !codeSent && (
+          <button
+            type="button"
+            className="ghost"
+            disabled={submitting}
+            onClick={async (event) => {
+              if (!event.currentTarget.form?.reportValidity()) return;
+              setSubmitting(true);
+              setMessage("");
+              try {
+                await onDevLogin(email);
+              } catch (err) {
+                setMessage(
+                  err instanceof Error ? err.message : "Local login failed.",
+                );
+              } finally {
+                setSubmitting(false);
+              }
+            }}
+          >
+            <KeyRound size={16} />
+            Local login
+          </button>
+        )}
         {codeSent && (
           <button
             type="button"

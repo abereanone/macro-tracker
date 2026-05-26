@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build && node scripts/copy-404.mjs",
-    "preview": "wrangler pages dev dist --d1 DB=macro_tracker",
+    "preview": "wrangler pages dev dist --env-file .dev.vars --d1 DB=macro_tracker",
     "test": "vitest run",
     "db:migrate": "wrangler d1 migrations apply macro_tracker --local",
     "db:clone:remote": "node scripts/clone-remote-db.mjs",
