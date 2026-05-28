@@ -18,7 +18,9 @@ import {
   Scale,
   Settings,
   Target,
+  Users,
   Utensils,
+  X,
 } from "lucide-react";
 import "./styles.css";
 
@@ -115,6 +117,30 @@ type LocalUserOption = {
   email: string;
   name: string;
 };
+type FriendUser = {
+  id: string;
+  email: string;
+  name: string;
+  createdAt?: string;
+};
+type FriendInvite = {
+  id: string;
+  email?: string;
+  inviter?: FriendUser;
+  status?: string;
+  expiresAt: string;
+  createdAt: string;
+};
+type FriendsResponse = {
+  friends: FriendUser[];
+  sharedWith: FriendUser[];
+  receivedInvites: FriendInvite[];
+  sentInvites: FriendInvite[];
+};
+type HelpBubble = {
+  title: string;
+  body: string;
+};
 
 const routes = [
   "app",
@@ -122,6 +148,7 @@ const routes = [
   "saved-meals",
   "reports",
   "goals",
+  "friends",
   "settings",
   "login",
 ] as const;
@@ -203,6 +230,59 @@ const timezones = [
   "Australia/Sydney",
 ];
 
+const routeHelp: Partial<Record<Exclude<Route, "login">, HelpBubble[]>> = {
+  app: [
+    {
+      title: "Log food first",
+      body: "Daily Diary starts with food and saved meal entry because logging meals is the main job here.",
+    },
+    {
+      title: "Review the day",
+      body: "Calories, protein, movement, workouts, supplements, weight, and each food entry are collected below the entry tools.",
+    },
+  ],
+  foods: [
+    {
+      title: "Food records",
+      body: "Create foods with serving size, calories, and macros so diary and meal logging can show useful numbers everywhere.",
+    },
+  ],
+  "saved-meals": [
+    {
+      title: "Meal prep",
+      body: "Build reusable meals from foods. The list shows meal totals and each ingredient's scaled calories and macros.",
+    },
+  ],
+  reports: [
+    {
+      title: "Progress view",
+      body: "Reports summarize logged days, weights, calories, and maintenance estimates for the selected date range.",
+    },
+  ],
+  goals: [
+    {
+      title: "Calculated calories",
+      body: "Goals combine weight entries and diary data to estimate maintenance and daily calorie targets.",
+    },
+  ],
+  friends: [
+    {
+      title: "Sharing access",
+      body: "Invite someone by email. When they accept, they can view your diary and reports read-only.",
+    },
+    {
+      title: "Viewing friends",
+      body: "Use View read-only to switch Daily Diary and Reports into a friend's data without changing it.",
+    },
+  ],
+  settings: [
+    {
+      title: "Daily goals",
+      body: "Choose which daily goals appear in the diary and save all settings together with one Save Settings button.",
+    },
+  ],
+};
+
 function routeFromPath(pathname: string): Route {
   const normalized = pathname.replace(/\/+$/, "") || "/";
   if (normalized === "/login") return "login";
@@ -243,6 +323,8 @@ function App() {
   );
   const [message, setMessage] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [viewingFriend, setViewingFriend] = useState<FriendUser | null>(null);
+  const [dismissedHelp, setDismissedHelp] = useState<string[]>([]);
 
   useEffect(() => {
     api<{ ok: boolean; user: User }>("/me")
@@ -250,6 +332,9 @@ function App() {
         setUser(res.user);
         const currentRoute = routeFromPath(location.pathname);
         setRoute(currentRoute === "login" ? "app" : currentRoute);
+        api<{ dismissed: string[] }>("/help-dismissals")
+          .then((help) => setDismissedHelp(help.dismissed))
+          .catch(() => setDismissedHelp([]));
       })
       .catch(() => setRoute("login"));
   }, []);
@@ -277,7 +362,15 @@ function App() {
       body: JSON.stringify({ email, code }),
     });
     setUser(res.user);
-    navigate("app");
+    api<{ dismissed: string[] }>("/help-dismissals")
+      .then((help) => setDismissedHelp(help.dismissed))
+      .catch(() => setDismissedHelp([]));
+    if (new URLSearchParams(location.search).has("invite")) {
+      setRoute("friends");
+      setMobileMenuOpen(false);
+    } else {
+      navigate("app");
+    }
   }
 
   async function devLogin(email: string) {
@@ -286,13 +379,35 @@ function App() {
       body: JSON.stringify({ email }),
     });
     setUser(res.user);
-    navigate("app");
+    api<{ dismissed: string[] }>("/help-dismissals")
+      .then((help) => setDismissedHelp(help.dismissed))
+      .catch(() => setDismissedHelp([]));
+    if (new URLSearchParams(location.search).has("invite")) {
+      setRoute("friends");
+      setMobileMenuOpen(false);
+    } else {
+      navigate("app");
+    }
   }
 
   async function logout() {
     await api("/auth/logout", { method: "POST", body: "{}" });
     setUser(null);
+    setViewingFriend(null);
+    setDismissedHelp([]);
     navigate("login");
+  }
+
+  async function dismissHelp(helpKey: string) {
+    setDismissedHelp((current) =>
+      current.includes(helpKey) ? current : [...current, helpKey],
+    );
+    api<{ dismissed: string[] }>("/help-dismissals", {
+      method: "POST",
+      body: JSON.stringify({ helpKey }),
+    })
+      .then((res) => setDismissedHelp(res.dismissed))
+      .catch(() => {});
   }
 
   if (!user || route === "login")
@@ -307,11 +422,17 @@ function App() {
     );
 
   const page = {
-    app: <Dashboard user={user} />,
+    app: <Dashboard user={user} viewingUser={viewingFriend} />,
     foods: <Foods user={user} />,
     "saved-meals": <SavedMeals user={user} />,
-    reports: <Reports />,
+    reports: <Reports viewingUser={viewingFriend} />,
     goals: <Goals />,
+    friends: (
+      <FriendsPage
+        viewingUser={viewingFriend}
+        setViewingUser={setViewingFriend}
+      />
+    ),
     settings: <SettingsPage user={user} setUser={setUser} onLogout={logout} />,
   }[route] ?? <Dashboard user={user} />;
 
@@ -364,6 +485,12 @@ function App() {
           <Target size={18} /> Goals
         </button>
         <button
+          className={route === "friends" ? "active" : ""}
+          onClick={() => navigate("friends")}
+        >
+          <Users size={18} /> Friends
+        </button>
+        <button
           className={route === "settings" ? "active" : ""}
           onClick={() => navigate("settings")}
         >
@@ -371,7 +498,61 @@ function App() {
         </button>
         <span className="signed-in">{user.email}</span>
       </aside>
-      <main>{page}</main>
+      <main>
+        {viewingFriend && (
+          <div className="viewing-banner">
+            <span>
+              Viewing read-only data for <strong>{viewingFriend.name}</strong>
+            </span>
+            <button className="ghost" onClick={() => setViewingFriend(null)}>
+              View my data
+            </button>
+          </div>
+        )}
+        <HelpBubbles
+          route={route}
+          dismissed={dismissedHelp}
+          onDismiss={dismissHelp}
+        />
+        {page}
+      </main>
+    </div>
+  );
+}
+
+function HelpBubbles({
+  route,
+  dismissed,
+  onDismiss,
+}: {
+  route: Route;
+  dismissed: string[];
+  onDismiss: (helpKey: string) => void;
+}) {
+  if (route === "login") return null;
+  const bubbles = routeHelp[route] ?? [];
+  const visible = bubbles
+    .map((bubble, index) => ({
+      ...bubble,
+      key: `${route}:${index}`,
+    }))
+    .filter((bubble) => !dismissed.includes(bubble.key));
+  if (!visible.length) return null;
+  return (
+    <div className="help-bubbles" aria-label="Page help">
+      {visible.map((bubble) => (
+        <div className="help-bubble" key={bubble.key}>
+          <button
+            className="ghost icon-button"
+            onClick={() => onDismiss(bubble.key)}
+            aria-label="Dismiss help"
+          >
+            <X size={16} />
+          </button>
+          <strong>{bubble.title}</strong>
+          <p>{bubble.body}</p>
+        </div>
+      ))}
     </div>
   );
 }
@@ -532,7 +713,23 @@ function Login({
   );
 }
 
-function Dashboard({ user }: { user: User }) {
+function ownerQuery(viewingUser?: FriendUser | null) {
+  return viewingUser ? `ownerUserId=${encodeURIComponent(viewingUser.id)}` : "";
+}
+
+function withOwner(path: string, viewingUser?: FriendUser | null) {
+  const query = ownerQuery(viewingUser);
+  if (!query) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}${query}`;
+}
+
+function Dashboard({
+  user,
+  viewingUser,
+}: {
+  user: User;
+  viewingUser?: FriendUser | null;
+}) {
   const [date, setDate] = useState(today());
   const [day, setDay] = useState<any>(null);
   const [foods, setFoods] = useState<Food[]>([]);
@@ -549,16 +746,21 @@ function Dashboard({ user }: { user: User }) {
   const [weightValue, setWeightValue] = useState("");
   const [weightUnit, setWeightUnit] = useState(user.preferredWeightUnit);
   const [savingWeight, setSavingWeight] = useState(false);
+  const readOnly = Boolean(viewingUser);
   const load = () => {
-    api(`/days/${date}`).then(setDay);
-    api<{ meals: SavedMeal[] }>("/saved-meals?scope=all").then((res) =>
-      setMeals(res.meals),
-    );
-    api("/goal-plans/active")
+    api(withOwner(`/days/${date}`, viewingUser)).then(setDay);
+    if (readOnly) {
+      setMeals([]);
+    } else {
+      api<{ meals: SavedMeal[] }>("/saved-meals?scope=all").then((res) =>
+        setMeals(res.meals),
+      );
+    }
+    api(withOwner("/goal-plans/active", viewingUser))
       .then(setActiveGoal)
       .catch(() => setActiveGoal(null));
   };
-  useEffect(load, [date]);
+  useEffect(load, [date, viewingUser?.id]);
   useEffect(() => {
     setWeightValue(day?.weight ? String(day.weight.weight_value) : "");
     setWeightUnit(day?.weight?.weight_unit ?? user.preferredWeightUnit);
@@ -644,7 +846,10 @@ function Dashboard({ user }: { user: User }) {
           </button>
         </div>
       )}
-      <Header title="Daily Diary" icon={<CalendarDays />} />
+      <Header
+        title={viewingUser ? `${viewingUser.name}'s Daily Diary` : "Daily Diary"}
+        icon={<CalendarDays />}
+      />
       <div className="toolbar">
         <input
           type="date"
@@ -653,6 +858,7 @@ function Dashboard({ user }: { user: User }) {
         />
         <button onClick={() => setDate(today())}>Today</button>
       </div>
+      {!readOnly && (
       <div className="two-col">
         <Panel title="Log Food">
           <form
@@ -780,6 +986,7 @@ function Dashboard({ user }: { user: User }) {
           </div>
         </Panel>
       </div>
+      )}
       {totals && (
         <div className="metric-grid today-metrics">
           <MacroMetric
@@ -827,6 +1034,7 @@ function Dashboard({ user }: { user: User }) {
                   : "No weight logged"}
               </small>
             </span>
+            {!readOnly && (
             <form
               className="compact-form"
               onSubmit={async (event) => {
@@ -871,6 +1079,7 @@ function Dashboard({ user }: { user: User }) {
                 <Scale size={16} /> {savingWeight ? "Saving..." : "Save"}
               </button>
             </form>
+            )}
           </div>
           {day?.dailyGoals?.length > 0 && (
             <div className="diary-goals-block">
@@ -881,7 +1090,9 @@ function Dashboard({ user }: { user: User }) {
                     <input
                       type="checkbox"
                       checked={Boolean(goal.completed)}
+                      disabled={readOnly}
                       onChange={async (event) => {
+                        if (readOnly) return;
                         await api("/daily-goal-completions", {
                           method: "POST",
                           body: JSON.stringify({
@@ -912,15 +1123,17 @@ function Dashboard({ user }: { user: User }) {
               <span>
                 {Math.round(item.calories)}cal · {Math.round(item.protein_g)}P {Math.round(item.fat_g)}F {Math.round(item.carbohydrate_g)}C
               </span>
-              <button
-                className="ghost"
-                onClick={async () => {
-                  await api(`/diary-items/${item.id}`, { method: "DELETE" });
-                  load();
-                }}
-              >
-                Delete
-              </button>
+              {!readOnly && (
+                <button
+                  className="ghost"
+                  onClick={async () => {
+                    await api(`/diary-items/${item.id}`, { method: "DELETE" });
+                    load();
+                  }}
+                >
+                  Delete
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -1729,20 +1942,226 @@ function quantityUnitOptions(currentUnit: string) {
   return units;
 }
 
-function Reports() {
+function FriendsPage({
+  viewingUser,
+  setViewingUser,
+}: {
+  viewingUser: FriendUser | null;
+  setViewingUser: (friend: FriendUser | null) => void;
+}) {
+  const [friends, setFriends] = useState<FriendsResponse | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+  const inviteToken = new URLSearchParams(location.search).get("invite");
+
+  const load = () =>
+    api<FriendsResponse & { ok: boolean }>("/friends").then((res) => {
+      setFriends(res);
+      return res;
+    });
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  useEffect(() => {
+    if (!inviteToken) return;
+    let cancelled = false;
+    setSaving(true);
+    api<FriendsResponse & { ok: boolean }>("/friend-invites/accept", {
+      method: "POST",
+      body: JSON.stringify({ token: inviteToken }),
+    })
+      .then((res) => {
+        if (cancelled) return;
+        setFriends(res);
+        setMessage("Friend invite accepted.");
+        history.replaceState(null, "", "/app/friends");
+      })
+      .catch((error) => {
+        if (!cancelled) setMessage(error.message);
+      })
+      .finally(() => {
+        if (!cancelled) setSaving(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [inviteToken]);
+
+  async function sendInvite(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!inviteEmail.trim() || saving) return;
+    setSaving(true);
+    setMessage("");
+    try {
+      await api("/friend-invites", {
+        method: "POST",
+        body: JSON.stringify({ email: inviteEmail }),
+      });
+      setInviteEmail("");
+      setMessage("Invite sent.");
+      await load();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function acceptInvite(inviteId: string) {
+    setSaving(true);
+    setMessage("");
+    try {
+      const res = await api<FriendsResponse & { ok: boolean }>(
+        "/friend-invites/accept",
+        {
+          method: "POST",
+          body: JSON.stringify({ inviteId }),
+        },
+      );
+      setFriends(res);
+      setMessage("Friend invite accepted.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section>
+      <Header title="Friends" icon={<Users />} />
+      <Panel title="Invite a Friend">
+        <form onSubmit={sendInvite}>
+          <label className="field">
+            <span>Email</span>
+            <input
+              type="email"
+              value={inviteEmail}
+              onChange={(event) => setInviteEmail(event.target.value)}
+              placeholder="friend@example.com"
+              required
+            />
+          </label>
+          <button disabled={saving || !inviteEmail.trim()}>
+            <Mail size={16} /> {saving ? "Sending..." : "Send invite"}
+          </button>
+        </form>
+        {message && <p className={message.includes("sent") || message.includes("accepted") ? "success-text" : "error-text"}>{message}</p>}
+      </Panel>
+
+      {(friends?.receivedInvites.length ?? 0) > 0 && (
+        <Panel title="Invites to Accept">
+          <div className="list">
+            {friends!.receivedInvites.map((invite) => (
+              <div className="list-row" key={invite.id}>
+                <span>
+                  <strong>{invite.inviter?.name}</strong>
+                  <small>{invite.inviter?.email} wants to share their data with you.</small>
+                </span>
+                <button disabled={saving} onClick={() => acceptInvite(invite.id)}>
+                  Accept
+                </button>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      <Panel title="Data I Can View">
+        <div className="list">
+          {friends?.friends.length ? (
+            friends.friends.map((friend) => (
+              <div className="list-row" key={friend.id}>
+                <span>
+                  <strong>{friend.name}</strong>
+                  <small>{friend.email}</small>
+                </span>
+                <div className="row-actions">
+                  <button onClick={() => setViewingUser(friend)}>
+                    View read-only
+                  </button>
+                  <button
+                    className="ghost"
+                    onClick={async () => {
+                      const res = await api<FriendsResponse & { ok: boolean }>(
+                        `/friends/${friend.id}`,
+                        { method: "DELETE" },
+                      );
+                      if (viewingUser?.id === friend.id) setViewingUser(null);
+                      setFriends(res);
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            ))
+          ) : (
+            <p>No accepted friend access yet.</p>
+          )}
+        </div>
+      </Panel>
+
+      <Panel title="People Who Can View Me">
+        <div className="list">
+          {friends?.sharedWith.length ? (
+            friends.sharedWith.map((friend) => (
+              <div className="list-row" key={friend.id}>
+                <span>
+                  <strong>{friend.name}</strong>
+                  <small>{friend.email}</small>
+                </span>
+              </div>
+            ))
+          ) : (
+            <p>No one has accepted access yet.</p>
+          )}
+        </div>
+      </Panel>
+
+      {(friends?.sentInvites.length ?? 0) > 0 && (
+        <Panel title="Pending Invites">
+          <div className="list">
+            {friends!.sentInvites.map((invite) => (
+              <div className="list-row" key={invite.id}>
+                <span>
+                  <strong>{invite.email}</strong>
+                  <small>Expires {invite.expiresAt.slice(0, 10)}</small>
+                </span>
+                <button
+                  className="ghost"
+                  onClick={async () => {
+                    const res = await api<FriendsResponse & { ok: boolean }>(
+                      `/friend-invites/${invite.id}`,
+                      { method: "DELETE" },
+                    );
+                    setFriends(res);
+                  }}
+                >
+                  Revoke
+                </button>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+    </section>
+  );
+}
+
+function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
   const [start, setStart] = useState(() => daysAgo(34));
   const [end, setEnd] = useState(today());
   const [summary, setSummary] = useState<any>(null);
   const [maintenance, setMaintenance] = useState<any>(null);
   useEffect(() => {
-    api(`/reports/summary?start=${start}&end=${end}`).then(setSummary);
-    api(`/reports/maintenance?start=${start}&end=${end}`)
+    api(withOwner(`/reports/summary?start=${start}&end=${end}`, viewingUser)).then(setSummary);
+    api(withOwner(`/reports/maintenance?start=${start}&end=${end}`, viewingUser))
       .then(setMaintenance)
       .catch((err) => setMaintenance({ error: err.message }));
-  }, [start, end]);
+  }, [start, end, viewingUser?.id]);
   return (
     <section>
-      <Header title="Reports" icon={<BarChart3 />} />
+      <Header title={viewingUser ? `${viewingUser.name}'s Reports` : "Reports"} icon={<BarChart3 />} />
       <DateRange start={start} end={end} setStart={setStart} setEnd={setEnd} />
       <div className="metric-grid">
         <Metric label="Logged Days" value={summary?.days?.length ?? 0} />

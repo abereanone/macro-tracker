@@ -59,10 +59,23 @@ type DbMaintenanceSnapshot = {
   daily_weight_adjustment: number | null;
 };
 type DbDailyGoal = { id: string; label: string; goal_type: string; minutes: number | null; active: number; sort_order: number };
+type DbFriendInvite = {
+  id: string;
+  inviter_user_id: string;
+  invitee_email: string;
+  token_hash: string;
+  status: string;
+  expires_at: string;
+  accepted_by_user_id: string | null;
+  accepted_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
 
 const sessionCookieName = 'macro_session';
 const loginCodeExpiresMs = 10 * 60 * 1000;
 const sessionExpiresMs = 30 * 24 * 60 * 60 * 1000;
+const friendInviteExpiresMs = 14 * 24 * 60 * 60 * 1000;
 const maxLoginAttempts = 5;
 
 export const onRequest: PagesFunction<Env> = async (ctx) => {
@@ -84,6 +97,14 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     if (method === 'GET' && path === '/me') return json({ ok: true, user: mapUser(user) });
     if (method === 'PUT' && path === '/me/settings') return updateSettings(ctx, user);
     if (method === 'POST' && path === '/me/delete-data') return deleteMyData(ctx, user);
+    if (path === '/help-dismissals' && method === 'GET') return listHelpDismissals(ctx, user);
+    if (path === '/help-dismissals' && method === 'POST') return dismissHelp(ctx, user);
+
+    if (path === '/friends' && method === 'GET') return listFriends(ctx, user);
+    if (segments[0] === 'friends' && segments[1] && method === 'DELETE') return removeFriendAccess(ctx, user, segments[1]);
+    if (path === '/friend-invites' && method === 'POST') return createFriendInvite(ctx, user, url);
+    if (path === '/friend-invites/accept' && method === 'POST') return acceptFriendInvite(ctx, user);
+    if (segments[0] === 'friend-invites' && segments[1] && method === 'DELETE') return revokeFriendInvite(ctx, user, segments[1]);
 
     if (path === '/foods' && method === 'GET') return listFoods(ctx, user, url);
     if (path === '/foods' && method === 'POST') return createFood(ctx, user);
@@ -98,24 +119,24 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     if (segments[0] === 'saved-meals' && segments[1] && segments[2] === 'copy' && method === 'POST') return copyMeal(ctx, user, segments[1]);
     if (segments[0] === 'saved-meals' && segments[1] && segments[2] === 'add-to-diary' && method === 'POST') return addMealToDiary(ctx, user, segments[1]);
 
-    if (segments[0] === 'days' && segments[1] && method === 'GET') return getDay(ctx, user, segments[1]);
+    if (segments[0] === 'days' && segments[1] && method === 'GET') return getDay(ctx, await readableUser(ctx, user, url), segments[1]);
     if (path === '/diary-items' && method === 'POST') return createDiaryItem(ctx, user);
     if (segments[0] === 'diary-items' && segments[1] && method === 'PUT') return updateDiaryItem(ctx, user, segments[1]);
     if (segments[0] === 'diary-items' && segments[1] && method === 'DELETE') return deleteDiaryItem(ctx, user, segments[1]);
 
-    if (path === '/weight' && method === 'GET') return listWeight(ctx, user, url);
+    if (path === '/weight' && method === 'GET') return listWeight(ctx, await readableUser(ctx, user, url), url);
     if (path === '/weight' && method === 'POST') return upsertWeight(ctx, user);
     if (segments[0] === 'weight' && segments[1] && method === 'PUT') return updateWeight(ctx, user, segments[1]);
     if (segments[0] === 'weight' && segments[1] && method === 'DELETE') return deleteWeight(ctx, user, segments[1]);
 
-    if (path === '/reports/summary' && method === 'GET') return reportSummary(ctx, user, url);
-    if (path === '/reports/maintenance' && method === 'GET') return reportMaintenance(ctx, user, url);
+    if (path === '/reports/summary' && method === 'GET') return reportSummary(ctx, await readableUser(ctx, user, url), url);
+    if (path === '/reports/maintenance' && method === 'GET') return reportMaintenance(ctx, await readableUser(ctx, user, url), url);
     if (path === '/daily-goals' && method === 'GET') return listDailyGoals(ctx, user);
     if (path === '/daily-goals' && method === 'PUT') return updateDailyGoals(ctx, user);
     if (path === '/daily-goal-completions' && method === 'POST') return setDailyGoalCompletion(ctx, user);
     if (path === '/goal-plans' && method === 'POST') return createGoalPlan(ctx, user);
     if (path === '/goal-plans' && method === 'GET') return listGoalPlans(ctx, user, url);
-    if (path === '/goal-plans/active' && method === 'GET') return activeGoalPlan(ctx, user);
+    if (path === '/goal-plans/active' && method === 'GET') return activeGoalPlan(ctx, await readableUser(ctx, user, url));
     if (segments[0] === 'goal-plans' && segments[1] && method === 'PUT') return archiveGoalPlan(ctx, user, segments[1]);
 
     return error('NOT_FOUND', 'Route not found.', 404);
@@ -377,6 +398,181 @@ function mapUser(user: DbUser) {
     preferredWeightUnit: user.preferred_weight_unit ?? 'lb',
     timezone: user.timezone ?? 'America/New_York',
   };
+}
+
+function displayName(user: Pick<DbUser, 'email' | 'first_name' | 'last_name'>) {
+  return [user.first_name, user.last_name].filter(Boolean).join(' ') || user.email;
+}
+
+function mapFriendUser(user: Pick<DbUser, 'id' | 'email' | 'first_name' | 'last_name'>) {
+  return {
+    id: user.id,
+    email: user.email,
+    name: displayName(user),
+  };
+}
+
+async function readableUser(ctx: Ctx, viewer: DbUser, url: URL) {
+  const ownerId = url.searchParams.get('ownerUserId')?.trim();
+  if (!ownerId || ownerId === viewer.id) return viewer;
+  const access = await ctx.env.DB.prepare(
+    'SELECT id FROM friend_access WHERE viewer_user_id = ? AND owner_user_id = ?',
+  )
+    .bind(viewer.id, ownerId)
+    .first<{ id: string }>();
+  if (!access) throw new ApiError('FORBIDDEN', 'You do not have access to that friend.', 403);
+  const owner = await ctx.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(ownerId).first<DbUser>();
+  if (!owner) throw new ApiError('NOT_FOUND', 'Friend not found.', 404);
+  return owner;
+}
+
+async function listFriends(ctx: Ctx, user: DbUser) {
+  const viewable = await ctx.env.DB.prepare(
+    `SELECT u.id, u.email, u.first_name, u.last_name, fa.created_at
+     FROM friend_access fa
+     JOIN users u ON u.id = fa.owner_user_id
+     WHERE fa.viewer_user_id = ?
+     ORDER BY u.email`,
+  )
+    .bind(user.id)
+    .all<Pick<DbUser, 'id' | 'email' | 'first_name' | 'last_name'> & { created_at: string }>();
+  const sharedWith = await ctx.env.DB.prepare(
+    `SELECT u.id, u.email, u.first_name, u.last_name, fa.created_at
+     FROM friend_access fa
+     JOIN users u ON u.id = fa.viewer_user_id
+     WHERE fa.owner_user_id = ?
+     ORDER BY u.email`,
+  )
+    .bind(user.id)
+    .all<Pick<DbUser, 'id' | 'email' | 'first_name' | 'last_name'> & { created_at: string }>();
+  const receivedInvites = await ctx.env.DB.prepare(
+    `SELECT fi.*, u.email AS inviter_email, u.first_name AS inviter_first_name, u.last_name AS inviter_last_name
+     FROM friend_invites fi
+     JOIN users u ON u.id = fi.inviter_user_id
+     WHERE fi.invitee_email = ? AND fi.status = 'pending' AND fi.expires_at > ?
+     ORDER BY fi.created_at DESC`,
+  )
+    .bind(user.email, nowIso())
+    .all<DbFriendInvite & { inviter_email: string; inviter_first_name: string | null; inviter_last_name: string | null }>();
+  const sentInvites = await ctx.env.DB.prepare(
+    `SELECT id, invitee_email, status, expires_at, created_at
+     FROM friend_invites
+     WHERE inviter_user_id = ? AND status = 'pending'
+     ORDER BY created_at DESC`,
+  )
+    .bind(user.id)
+    .all<Pick<DbFriendInvite, 'id' | 'invitee_email' | 'status' | 'expires_at' | 'created_at'>>();
+  return json({
+    ok: true,
+    friends: viewable.results.map((row) => ({ ...mapFriendUser(row), createdAt: row.created_at })),
+    sharedWith: sharedWith.results.map((row) => ({ ...mapFriendUser(row), createdAt: row.created_at })),
+    receivedInvites: receivedInvites.results.map((invite) => ({
+      id: invite.id,
+      inviter: {
+        id: invite.inviter_user_id,
+        email: invite.inviter_email,
+        name: displayName({ email: invite.inviter_email, first_name: invite.inviter_first_name, last_name: invite.inviter_last_name }),
+      },
+      expiresAt: invite.expires_at,
+      createdAt: invite.created_at,
+    })),
+    sentInvites: sentInvites.results.map((invite) => ({
+      id: invite.id,
+      email: invite.invitee_email,
+      status: invite.status,
+      expiresAt: invite.expires_at,
+      createdAt: invite.created_at,
+    })),
+  });
+}
+
+async function createFriendInvite(ctx: Ctx, user: DbUser, url: URL) {
+  const input = await body(ctx);
+  const email = requireEmail(input.email);
+  if (email === user.email) throw new ApiError('VALIDATION_ERROR', 'Invite another person, not your own email.');
+  const token = randomToken();
+  const inviteId = id();
+  const expiresAt = futureIso(friendInviteExpiresMs);
+  await ctx.env.DB.prepare(
+    `INSERT INTO friend_invites (id, inviter_user_id, invitee_email, token_hash, expires_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+    .bind(inviteId, user.id, email, await sha256(token), expiresAt)
+    .run();
+  const inviteUrl = `${url.origin}/app/friends?invite=${encodeURIComponent(token)}`;
+  const resend = new Resend(ctx.env.RESEND_API_KEY);
+  await resend.emails.send({
+    from: 'Macro Tracker <login@macros.michaelcoughlin.net>',
+    to: email,
+    subject: `${displayName(user)} invited you to view their Macro Tracker`,
+    text: `${displayName(user)} invited you to view their Macro Tracker diary and progress.\n\nAccept the invite here: ${inviteUrl}\n\nIf you do not want access, you can ignore this email. This invite expires in 14 days.`,
+  });
+  return json({ ok: true, invite: { id: inviteId, email, expiresAt } });
+}
+
+async function acceptFriendInvite(ctx: Ctx, user: DbUser) {
+  const input = await body(ctx);
+  const token = typeof input.token === 'string' ? input.token.trim() : '';
+  const inviteId = typeof input.inviteId === 'string' ? input.inviteId.trim() : '';
+  const invite = token
+    ? await ctx.env.DB.prepare('SELECT * FROM friend_invites WHERE token_hash = ? AND status = ? AND expires_at > ?')
+      .bind(await sha256(token), 'pending', nowIso())
+      .first<DbFriendInvite>()
+    : inviteId
+      ? await ctx.env.DB.prepare('SELECT * FROM friend_invites WHERE id = ? AND status = ? AND expires_at > ?')
+        .bind(inviteId, 'pending', nowIso())
+        .first<DbFriendInvite>()
+      : null;
+  if (!invite) throw new ApiError('NOT_FOUND', 'Invite not found or expired.', 404);
+  if (invite.invitee_email !== user.email) throw new ApiError('FORBIDDEN', 'This invite was sent to a different email address.', 403);
+  if (invite.inviter_user_id === user.id) throw new ApiError('VALIDATION_ERROR', 'You cannot accept your own invite.');
+  await ctx.env.DB.batch([
+    ctx.env.DB.prepare(
+      `INSERT INTO friend_access (id, viewer_user_id, owner_user_id, invite_id)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(viewer_user_id, owner_user_id) DO UPDATE SET invite_id = excluded.invite_id`,
+    ).bind(id(), user.id, invite.inviter_user_id, invite.id),
+    ctx.env.DB.prepare(
+      "UPDATE friend_invites SET status = 'accepted', accepted_by_user_id = ?, accepted_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    ).bind(user.id, nowIso(), invite.id),
+  ]);
+  return listFriends(ctx, user);
+}
+
+async function revokeFriendInvite(ctx: Ctx, user: DbUser, inviteId: string) {
+  await ctx.env.DB.prepare(
+    "UPDATE friend_invites SET status = 'revoked', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND inviter_user_id = ? AND status = 'pending'",
+  )
+    .bind(inviteId, user.id)
+    .run();
+  return listFriends(ctx, user);
+}
+
+async function removeFriendAccess(ctx: Ctx, user: DbUser, ownerId: string) {
+  await ctx.env.DB.prepare('DELETE FROM friend_access WHERE viewer_user_id = ? AND owner_user_id = ?')
+    .bind(user.id, ownerId)
+    .run();
+  return listFriends(ctx, user);
+}
+
+async function listHelpDismissals(ctx: Ctx, user: DbUser) {
+  const result = await ctx.env.DB.prepare('SELECT help_key FROM help_dismissals WHERE user_id = ?')
+    .bind(user.id)
+    .all<{ help_key: string }>();
+  return json({ ok: true, dismissed: result.results.map((row) => row.help_key) });
+}
+
+async function dismissHelp(ctx: Ctx, user: DbUser) {
+  const input = await body(ctx);
+  const helpKey = requireString(input.helpKey, 'Help key');
+  await ctx.env.DB.prepare(
+    `INSERT INTO help_dismissals (id, user_id, help_key)
+     VALUES (?, ?, ?)
+     ON CONFLICT(user_id, help_key) DO UPDATE SET dismissed_at = CURRENT_TIMESTAMP`,
+  )
+    .bind(id(), user.id, helpKey)
+    .run();
+  return listHelpDismissals(ctx, user);
 }
 
 async function updateSettings(ctx: Ctx, user: DbUser) {
