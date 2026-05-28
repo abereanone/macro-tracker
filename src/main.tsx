@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   calculateLoggedNutrition,
+  calculateTotals,
   convertConsumedQuantityToServingQuantity,
 } from "./shared/calculations";
 import {
@@ -67,6 +68,12 @@ type SavedMeal = {
   visibility: "private" | "public";
   items: MealItem[];
 };
+type MacroSummary = {
+  calories?: number;
+  proteinG?: number;
+  fatG?: number;
+  carbohydrateG?: number;
+};
 type ActiveGoal = {
   plan: unknown | null;
   maintenance?: {
@@ -127,33 +134,58 @@ const daysAgo = (days: number) => {
   return date.toLocaleDateString("en-CA");
 };
 
-function mealItemCalories(item: MealItem) {
-  if (!item.servingQuantity || item.calories == null) return 0;
-  const food = {
-    servingQuantity: item.servingQuantity,
-    servingUnit: item.servingUnit,
-    servingGrams: item.servingGrams ?? null,
-    proteinG: item.proteinG ?? 0,
-    fatG: item.fatG ?? 0,
-    carbohydrateG: item.carbohydrateG ?? 0,
-    calories: item.calories,
+function foodNutrition(food: Food | MealItem) {
+  if (!food.servingQuantity || food.calories == null) return null;
+  return {
+    servingQuantity: food.servingQuantity,
+    servingUnit: food.servingUnit,
+    servingGrams: food.servingGrams ?? null,
+    proteinG: food.proteinG ?? 0,
+    fatG: food.fatG ?? 0,
+    carbohydrateG: food.carbohydrateG ?? 0,
+    calories: food.calories,
   };
+}
+
+function formatFoodServing(food: Food | MealItem) {
+  if (!food.servingQuantity || !food.servingUnit) return "";
+  return `${food.servingQuantity}${food.servingUnit}`;
+}
+
+function formatFoodMacros(food: MacroSummary) {
+  return `${Math.round(food.calories ?? 0)}cal - ${Math.round(food.proteinG ?? 0)}P ${Math.round(food.fatG ?? 0)}F ${Math.round(food.carbohydrateG ?? 0)}C`;
+}
+
+function formatFoodSummary(food: Food | MealItem) {
+  const serving = formatFoodServing(food);
+  return serving ? `${serving} - ${formatFoodMacros(food)}` : formatFoodMacros(food);
+}
+
+function mealItemNutrition(item: MealItem) {
+  const food = foodNutrition(item);
+  if (!food) return { proteinG: 0, fatG: 0, carbohydrateG: 0, calories: 0 };
   try {
     const servingQuantity = convertConsumedQuantityToServingQuantity(
       food,
       item.quantity,
       item.quantityUnit,
     );
-    return calculateLoggedNutrition(food, servingQuantity).calories;
+    return calculateLoggedNutrition(food, servingQuantity);
   } catch {
-    return item.calories;
+    return food;
   }
 }
 
+function mealItemCalories(item: MealItem) {
+  return mealItemNutrition(item).calories;
+}
+
+function savedMealTotals(meal: SavedMeal) {
+  return calculateTotals(meal.items.map(mealItemNutrition));
+}
+
 function savedMealCalories(meal: SavedMeal) {
-  return Math.round(
-    meal.items.reduce((total, item) => total + mealItemCalories(item), 0),
-  );
+  return Math.round(savedMealTotals(meal).calories);
 }
 
 const timezones = [
@@ -679,11 +711,7 @@ function Dashboard({ user }: { user: User }) {
                       }}
                     >
                       <span>{food.description}</span>
-                      <small>
-                        {food.servingQuantity}
-                        {food.servingUnit} - {food.proteinG}P {food.fatG}F{" "}
-                        {food.carbohydrateG}C
-                      </small>
+                      <small>{formatFoodSummary(food)}</small>
                     </button>
                   ))}
                 </div>
@@ -719,8 +747,7 @@ function Dashboard({ user }: { user: User }) {
             </div>
             {selectedFood && (
               <small>
-                Food serving: {selectedFood.servingQuantity}
-                {selectedFood.servingUnit}
+                Food serving: {formatFoodSummary(selectedFood)}
               </small>
             )}
             <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
@@ -1307,9 +1334,7 @@ function FoodRow({
       <span>
         <strong>{food.description}</strong>
         <small>
-          {food.servingQuantity}
-          {food.servingUnit} - {food.proteinG}P {food.fatG}F{" "}
-          {food.carbohydrateG}C - {food.visibility}
+          {formatFoodSummary(food)} - {food.visibility}
         </small>
       </span>
       <span>{food.calories} cal</span>
@@ -1379,8 +1404,21 @@ function SavedMeals({ user }: { user: User }) {
               <span>
                 <strong>{meal.name}</strong>
                 <small>
-                  {meal.visibility} - {meal.items.length} items
+                  {meal.visibility} - {meal.items.length} items - {formatFoodMacros(savedMealTotals(meal))}
                 </small>
+                {meal.items.length > 0 && (
+                  <div className="meal-food-list">
+                    {meal.items.map((item, index) => {
+                      const nutrients = mealItemNutrition(item);
+                      return (
+                        <small key={`${item.foodId}-${index}`} className="meal-food-detail">
+                          {item.foodDescription} - {item.quantity}
+                          {item.quantityUnit} - {formatFoodMacros(nutrients)}
+                        </small>
+                      );
+                    })}
+                  </div>
+                )}
               </span>
               <div className="row-actions">
                 {meal.ownerUserId === user.id ? (
@@ -1558,7 +1596,8 @@ function MealForm({
             </button>
             {item.foodId && item.proteinG != null && (
               <small className="meal-item-info">
-                {Math.round(item.calories ?? 0)}cal · {Math.round(item.proteinG ?? 0)}P {Math.round(item.fatG ?? 0)}F {Math.round(item.carbohydrateG ?? 0)}C
+                {item.quantity}
+                {item.quantityUnit} - {formatFoodMacros(mealItemNutrition(item))}
               </small>
             )}
           </div>
@@ -1667,11 +1706,7 @@ function MealFoodPicker({
               }}
             >
               <span>{food.description}</span>
-              <small>
-                {food.servingQuantity}
-                {food.servingUnit} - {food.proteinG}P {food.fatG}F{" "}
-                {food.carbohydrateG}C
-              </small>
+              <small>{formatFoodSummary(food)}</small>
             </button>
           ))}
         </div>
@@ -1682,7 +1717,7 @@ function MealFoodPicker({
         </div>
       )}
       {item.foodId && item.servingQuantity != null && (
-        <small>Food serving: {item.servingQuantity}{item.servingUnit}</small>
+        <small>Food serving: {formatFoodSummary(item)}</small>
       )}
     </div>
   );

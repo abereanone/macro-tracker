@@ -243,6 +243,14 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
 .meal-item { display: grid; grid-template-columns: minmax(220px, 1fr) 90px 90px auto; gap: 10px; align-items: start; }
 .meal-item-info { grid-column: 1 / -1; margin: 0; }
 .meal-food-search .food-results { max-height: 220px; }
+.meal-food-list {
+  display: grid;
+  gap: 3px;
+  margin-top: 6px;
+}
+.meal-food-detail {
+  color: #40504a;
+}
 .list { display: grid; gap: 8px; }
 .list.compact { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
 .list.compact button {
