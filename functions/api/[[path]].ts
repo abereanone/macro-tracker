@@ -1,4 +1,4 @@
-import { calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, toLb } from '../../src/shared/calculations';
+import { calendarDaysInclusive, calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, estimateMaintenanceFromRecentWindow, toLb } from '../../src/shared/calculations';
 import { Resend } from 'resend';
 import {
   nonNegativeNumber,
@@ -76,6 +76,7 @@ const sessionCookieName = 'macro_session';
 const loginCodeExpiresMs = 10 * 60 * 1000;
 const sessionExpiresMs = 30 * 24 * 60 * 60 * 1000;
 const friendInviteExpiresMs = 14 * 24 * 60 * 60 * 1000;
+const maintenanceLookbackDays = 14;
 const maxLoginAttempts = 5;
 
 export const onRequest: PagesFunction<Env> = async (ctx) => {
@@ -131,6 +132,7 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
 
     if (path === '/reports/summary' && method === 'GET') return reportSummary(ctx, await readableUser(ctx, user, url), url);
     if (path === '/reports/maintenance' && method === 'GET') return reportMaintenance(ctx, await readableUser(ctx, user, url), url);
+    if (path === '/reports/two-week-weight-loss' && method === 'GET') return reportTwoWeekWeightLoss(ctx, await readableUser(ctx, user, url));
     if (path === '/daily-goals' && method === 'GET') return listDailyGoals(ctx, user);
     if (path === '/daily-goals' && method === 'PUT') return updateDailyGoals(ctx, user);
     if (path === '/daily-goal-completions' && method === 'POST') return setDailyGoalCompletion(ctx, user);
@@ -186,6 +188,11 @@ function dateInUserTimezone(user: DbUser, date = new Date()): string {
 
 function addDays(date: string, days: number): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+function maintenanceWindow(user: DbUser) {
+  const end = dateInUserTimezone(user);
+  return { start: addDays(end, -maintenanceLookbackDays), end };
 }
 
 function nowIso() {
@@ -1163,6 +1170,48 @@ async function reportMaintenance(ctx: Ctx, user: DbUser, url: URL) {
   });
 }
 
+async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
+  const window = maintenanceWindow(user);
+  const weights = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? AND entry_date BETWEEN ? AND ? ORDER BY entry_date')
+    .bind(user.id, window.start, window.end)
+    .all<DbWeight>();
+  const todayWeight = weights.results.find((weight) => weight.entry_date === window.end);
+  if (!todayWeight) {
+    return json({
+      ok: true,
+      canCalculate: false,
+      start: window.start,
+      end: window.end,
+      message: "Add today's weight to calculate weight loss over the last two weeks.",
+    });
+  }
+
+  const startWeight = weights.results.find((weight) => weight.entry_date < window.end);
+  if (!startWeight) {
+    return json({
+      ok: true,
+      canCalculate: false,
+      start: window.start,
+      end: window.end,
+      endWeight: mapWeightPoint(todayWeight),
+      message: 'Add an earlier weight entry from the last two weeks to calculate weight loss.',
+    });
+  }
+
+  const start = mapWeightPoint(startWeight);
+  const end = mapWeightPoint(todayWeight);
+  return json({
+    ok: true,
+    canCalculate: true,
+    windowStart: window.start,
+    windowEnd: window.end,
+    startWeight: start,
+    endWeight: end,
+    days: calendarDaysInclusive(start.date, end.date) - 1,
+    weightLossLb: Math.round((start.valueLb - end.valueLb + Number.EPSILON) * 100) / 100,
+  });
+}
+
 function mapWeightPoint(weight: DbWeight) {
   return {
     date: weight.entry_date,
@@ -1204,35 +1253,48 @@ function mapMaintenanceSnapshot(snapshot: DbMaintenanceSnapshot) {
 }
 
 async function latestMaintenance(ctx: Ctx, user: DbUser) {
-  const snapshot = await ctx.env.DB.prepare(
-    'SELECT * FROM user_maintenance_snapshots WHERE user_id = ? ORDER BY calculated_date DESC, created_at DESC LIMIT 1',
-  )
-    .bind(user.id)
-    .first<DbMaintenanceSnapshot>();
-  if (snapshot) return mapMaintenanceSnapshot(snapshot);
+  const window = maintenanceWindow(user);
+  const weights = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? AND entry_date BETWEEN ? AND ? ORDER BY entry_date')
+    .bind(user.id, window.start, window.end)
+    .all<DbWeight>();
+  const todayWeight = weights.results.find((weight) => weight.entry_date === window.end);
+  if (todayWeight) {
+    const priorWeight = weights.results.find((weight) => weight.entry_date < window.end);
+    if (priorWeight) {
+      const loggedDays = await loggedCaloriesBetweenWeights(ctx, user, window.start, window.end);
+      if (loggedDays.length >= 7) {
+        const estimate = estimateMaintenanceFromRecentWindow({
+          windowStart: window.start,
+          windowEnd: window.end,
+          startWeight: mapWeightPoint(priorWeight),
+          endWeight: mapWeightPoint(todayWeight),
+          loggedCaloriesByDay: loggedDays,
+        });
+        return {
+          ...estimate,
+          source: 'weigh-in',
+          calculatedDate: window.end,
+          maintenanceCalories: estimate.estimatedMaintenanceCalories,
+        };
+      }
+    }
+
+    const weight = mapWeightPoint(todayWeight);
+    return {
+      calculatedDate: weight.date,
+      maintenanceCalories: Math.round(weight.valueLb * 10),
+      estimatedMaintenanceCalories: Math.round(weight.valueLb * 10),
+      source: 'body-weight-fallback',
+      latestWeight: weight,
+      message: 'Starting estimate: add an earlier weight and at least 7 logged food days in the last two weeks to estimate maintenance calories.',
+    };
+  }
 
   const allWeights = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? ORDER BY entry_date')
     .bind(user.id)
     .all<DbWeight>();
   const latestWeight = allWeights.results.length > 0 ? allWeights.results[allWeights.results.length - 1] : null;
   if (!latestWeight) return null;
-
-  if (allWeights.results.length >= 2) {
-    const startWeight = mapWeightPoint(allWeights.results[0]);
-    const endWeight = mapWeightPoint(latestWeight);
-    if (startWeight.date !== endWeight.date) {
-      const loggedDays = await loggedCaloriesBetweenWeights(ctx, user, startWeight.date, endWeight.date);
-      if (loggedDays.length >= 7) {
-        const estimate = estimateMaintenanceFromLoggedDays({ startWeight, endWeight, loggedCaloriesByDay: loggedDays });
-        return {
-          ...estimate,
-          source: 'weigh-in',
-          calculatedDate: endWeight.date,
-          maintenanceCalories: estimate.estimatedMaintenanceCalories,
-        };
-      }
-    }
-  }
 
   const weight = mapWeightPoint(latestWeight);
   return {
@@ -1241,22 +1303,29 @@ async function latestMaintenance(ctx: Ctx, user: DbUser) {
     estimatedMaintenanceCalories: Math.round(weight.valueLb * 10),
     source: 'body-weight-fallback',
     latestWeight: weight,
-    message: 'Starting estimate: 10 calories per pound of body weight until enough weigh-in and diary data is available.',
+    message: "Starting estimate: add today's weight to calculate maintenance from the last two weeks.",
   };
 }
 
 async function recalculateMaintenanceSnapshot(ctx: Ctx, user: DbUser, endWeight: DbWeight) {
+  const window = maintenanceWindow(user);
   const priorWeight = await ctx.env.DB.prepare(
-    'SELECT * FROM weight_entries WHERE user_id = ? AND entry_date < ? ORDER BY entry_date ASC LIMIT 1',
+    'SELECT * FROM weight_entries WHERE user_id = ? AND entry_date BETWEEN ? AND ? AND entry_date < ? ORDER BY entry_date ASC LIMIT 1',
   )
-    .bind(user.id, endWeight.entry_date)
+    .bind(user.id, window.start, window.end, endWeight.entry_date)
     .first<DbWeight>();
   if (priorWeight) {
     const startWeight = mapWeightPoint(priorWeight);
     const finishWeight = mapWeightPoint(endWeight);
-    const loggedDays = await loggedCaloriesBetweenWeights(ctx, user, startWeight.date, finishWeight.date);
+    const loggedDays = await loggedCaloriesBetweenWeights(ctx, user, window.start, window.end);
     if (loggedDays.length >= 7) {
-      const estimate = estimateMaintenanceFromLoggedDays({ startWeight, endWeight: finishWeight, loggedCaloriesByDay: loggedDays });
+      const estimate = estimateMaintenanceFromRecentWindow({
+        windowStart: window.start,
+        windowEnd: window.end,
+        startWeight,
+        endWeight: finishWeight,
+        loggedCaloriesByDay: loggedDays,
+      });
       const snapshotId = id();
       await ctx.env.DB.prepare(
         `INSERT INTO user_maintenance_snapshots

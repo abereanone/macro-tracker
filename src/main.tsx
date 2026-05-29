@@ -87,6 +87,7 @@ type ActiveGoal = {
     calorieStart?: string | null;
     calorieEnd?: string | null;
     days?: number | null;
+    windowDays?: number | null;
     loggedDayCount?: number | null;
     averageLoggedCalories?: number | null;
     estimatedPeriodCalories?: number | null;
@@ -391,11 +392,14 @@ function App() {
   }
 
   async function logout() {
-    await api("/auth/logout", { method: "POST", body: "{}" });
-    setUser(null);
-    setViewingFriend(null);
-    setDismissedHelp([]);
-    navigate("login");
+    try {
+      await api("/auth/logout", { method: "POST", body: "{}" });
+    } finally {
+      setUser(null);
+      setViewingFriend(null);
+      setDismissedHelp([]);
+      navigate("login");
+    }
   }
 
   async function dismissHelp(helpKey: string) {
@@ -2152,13 +2156,15 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
   const [start, setStart] = useState(() => daysAgo(34));
   const [end, setEnd] = useState(today());
   const [summary, setSummary] = useState<any>(null);
-  const [maintenance, setMaintenance] = useState<any>(null);
+  const [twoWeekWeightLoss, setTwoWeekWeightLoss] = useState<any>(null);
   useEffect(() => {
     api(withOwner(`/reports/summary?start=${start}&end=${end}`, viewingUser)).then(setSummary);
-    api(withOwner(`/reports/maintenance?start=${start}&end=${end}`, viewingUser))
-      .then(setMaintenance)
-      .catch((err) => setMaintenance({ error: err.message }));
   }, [start, end, viewingUser?.id]);
+  useEffect(() => {
+    api(withOwner("/reports/two-week-weight-loss", viewingUser))
+      .then(setTwoWeekWeightLoss)
+      .catch((err) => setTwoWeekWeightLoss({ error: err.message }));
+  }, [viewingUser?.id]);
   return (
     <section>
       <Header title={viewingUser ? `${viewingUser.name}'s Reports` : "Reports"} icon={<BarChart3 />} />
@@ -2166,32 +2172,20 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
       <div className="metric-grid">
         <Metric label="Logged Days" value={summary?.days?.length ?? 0} />
         <Metric label="Weights" value={summary?.weights?.length ?? 0} />
-        <Metric
-          label="Maintenance"
-          value={
-            maintenance?.estimatedMaintenanceCalories
-              ? `${maintenance.estimatedMaintenanceCalories} cal`
-              : "Need data"
-          }
-        />
       </div>
-      <Panel title="Maintenance Estimate">
-        {maintenance?.error ? (
-          <p>{maintenance.error}</p>
-        ) : maintenance?.canCalculate === false ? (
-          <p>{maintenance.message}</p>
-        ) : maintenance ? (
+      <Panel title="Weight Loss Over Last Two Weeks">
+        {twoWeekWeightLoss?.error ? (
+          <p>{twoWeekWeightLoss.error}</p>
+        ) : twoWeekWeightLoss?.canCalculate === false ? (
+          <p>{twoWeekWeightLoss.message}</p>
+        ) : twoWeekWeightLoss ? (
           <p>
-            From {maintenance.startWeight.date} at{" "}
-            {maintenance.startWeight.value} {maintenance.startWeight.unit} to{" "}
-            {maintenance.endWeight.date} at {maintenance.endWeight.value}{" "}
-            {maintenance.endWeight.unit}, using diary entries from{" "}
-            {maintenance.calorieStart} through {maintenance.calorieEnd},
-            estimated maintenance is about{" "}
-            <strong>
-              {maintenance.estimatedMaintenanceCalories} calories/day
-            </strong>{" "}
-            from {maintenance.loggedDayCount} logged days.
+            From {twoWeekWeightLoss.startWeight.date} at{" "}
+            {twoWeekWeightLoss.startWeight.value}{" "}
+            {twoWeekWeightLoss.startWeight.unit} to today at{" "}
+            {twoWeekWeightLoss.endWeight.value}{" "}
+            {twoWeekWeightLoss.endWeight.unit}, weight loss is{" "}
+            <strong>{twoWeekWeightLoss.weightLossLb} lb</strong>.
           </p>
         ) : null}
       </Panel>
@@ -2258,7 +2252,9 @@ function Goals() {
                     This is calculated by taking the available data from the
                     last two weeks which shows an average logged intake of{" "}
                     {Math.round(maintenance.averageLoggedCalories ?? 0)}{" "}
-                    calories/day for {maintenance.loggedDayCount} of those days.
+                    calories/day for {maintenance.loggedDayCount} days with
+                    food entries in that {maintenance.windowDays ?? 14}-day
+                    window.
                   </span>
                   <span>
                     Your weight changed {maintenance.weightChangeLb} lb, implying
@@ -2868,7 +2864,7 @@ function SettingsPage({
         {deleteMessage && <div className="notice success">{deleteMessage}</div>}
       </Panel>
       <Panel title="Account">
-        <button onClick={onLogout}>
+        <button type="button" onClick={onLogout}>
           <LogOut size={16} /> Logout
         </button>
       </Panel>

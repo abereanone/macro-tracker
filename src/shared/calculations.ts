@@ -216,6 +216,57 @@ export function estimateMaintenanceFromLoggedDays(input: {
   };
 }
 
+export function estimateMaintenanceFromRecentWindow(input: {
+  windowStart: string;
+  windowEnd: string;
+  startWeight: WeightPoint;
+  endWeight: WeightPoint;
+  loggedCaloriesByDay: { date: string; calories: number }[];
+}) {
+  const windowDays = calendarDaysInclusive(input.windowStart, input.windowEnd) - 1;
+  if (windowDays <= 0) {
+    throw new Error('Window end date must be after window start date.');
+  }
+
+  const days = calendarDaysInclusive(input.startWeight.date, input.endWeight.date) - 1;
+  if (days <= 0) {
+    throw new Error('End weight date must be after start weight date.');
+  }
+  if (days > windowDays) {
+    throw new Error('Weight period cannot be longer than the maintenance window.');
+  }
+
+  const loggedDays = input.loggedCaloriesByDay.filter(
+    (day) => day.date >= input.windowStart && day.date < input.windowEnd,
+  );
+  if (!loggedDays.length) {
+    throw new Error('At least one logged food day is required in the maintenance window.');
+  }
+
+  const loggedCalories = loggedDays.reduce((sum, day) => sum + day.calories, 0);
+  const averageLoggedCalories = loggedCalories / loggedDays.length;
+  const estimatedPeriodCalories = averageLoggedCalories * windowDays;
+  const weightChangeLb = input.endWeight.valueLb - input.startWeight.valueLb;
+  const dailyWeightAdjustment = (weightChangeLb * CALORIES_PER_POUND) / days;
+  const estimatedMaintenanceCalories = averageLoggedCalories - dailyWeightAdjustment;
+
+  return {
+    start: input.startWeight.date,
+    end: input.endWeight.date,
+    calorieStart: input.windowStart,
+    calorieEnd: previousDate(input.windowEnd),
+    days,
+    windowDays,
+    loggedDayCount: loggedDays.length,
+    loggedCalories: round(loggedCalories, 1),
+    averageLoggedCalories: round(averageLoggedCalories, 1),
+    estimatedPeriodCalories: round(estimatedPeriodCalories, 1),
+    weightChangeLb: round(weightChangeLb, 2),
+    dailyWeightAdjustment: round(dailyWeightAdjustment, 0),
+    estimatedMaintenanceCalories: round(estimatedMaintenanceCalories, 0),
+  };
+}
+
 function previousDate(date: string): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
 }
