@@ -427,17 +427,24 @@ function App() {
 
   const page = {
     app: <Dashboard user={user} viewingUser={viewingFriend} />,
-    foods: <Foods user={user} />,
-    "saved-meals": <SavedMeals user={user} />,
+    foods: <Foods user={user} viewingUser={viewingFriend} />,
+    "saved-meals": <SavedMeals user={user} viewingUser={viewingFriend} />,
     reports: <Reports viewingUser={viewingFriend} />,
-    goals: <Goals />,
+    goals: <Goals viewingUser={viewingFriend} />,
     friends: (
       <FriendsPage
         viewingUser={viewingFriend}
         setViewingUser={setViewingFriend}
       />
     ),
-    settings: <SettingsPage user={user} setUser={setUser} onLogout={logout} />,
+    settings: (
+      <SettingsPage
+        user={user}
+        viewingUser={viewingFriend}
+        setUser={setUser}
+        onLogout={logout}
+      />
+    ),
   }[route] ?? <Dashboard user={user} />;
 
   return (
@@ -1177,19 +1184,33 @@ function dailyGoalLabel(goal: DailyGoal) {
   return goal.label;
 }
 
-function Foods({ user }: { user: User }) {
+function Foods({
+  user,
+  viewingUser,
+}: {
+  user: User;
+  viewingUser?: FriendUser | null;
+}) {
   const [foods, setFoods] = useState<Food[]>([]);
   const [scope, setScope] = useState("all");
   const [search, setSearch] = useState("");
   const [message, setMessage] = useState("");
   const [editingFood, setEditingFood] = useState<Food | null>(null);
+  const readOnly = Boolean(viewingUser);
   const load = (nextSearch = search, nextScope = scope) =>
     api<{ foods: Food[] }>(
-      `/foods?scope=${nextScope}&search=${encodeURIComponent(nextSearch)}`,
+      withOwner(
+        `/foods?scope=${readOnly ? "mine" : nextScope}&search=${encodeURIComponent(nextSearch)}`,
+        viewingUser,
+      ),
     ).then((res) => setFoods(res.foods));
   useEffect(() => {
     void load();
-  }, [scope, search]);
+  }, [scope, search, viewingUser?.id]);
+  useEffect(() => {
+    setEditingFood(null);
+    setMessage("");
+  }, [viewingUser?.id]);
   async function handleFoodSaved(food: Food, action: "added" | "updated") {
     setScope("all");
     setSearch("");
@@ -1199,13 +1220,15 @@ function Foods({ user }: { user: User }) {
   }
   return (
     <section>
-      <Header title="Foods" icon={<Utensils />} />
+      <Header title={viewingUser ? `${viewingUser.name}'s Foods` : "Foods"} icon={<Utensils />} />
       <SearchTools
         scope={scope}
         setScope={setScope}
         search={search}
         setSearch={setSearch}
+        showScope={!readOnly}
       />
+      {!readOnly && (
       <Panel title={editingFood ? "Modify Food" : "Add Food"}>
         <FoodForm
           food={editingFood}
@@ -1213,6 +1236,7 @@ function Foods({ user }: { user: User }) {
           onCancel={() => setEditingFood(null)}
         />
       </Panel>
+      )}
       {message && <div className="notice success">{message}</div>}
       <Panel title={search ? "Matching Foods" : "Foods"}>
         <div className="list">
@@ -1222,6 +1246,7 @@ function Foods({ user }: { user: User }) {
               food={food}
               mine={food.ownerUserId === user.id}
               reload={load}
+              readOnly={readOnly}
               onCopy={() =>
                 setEditingFood({ ...food, id: "", ownerUserId: user.id })
               }
@@ -1537,12 +1562,14 @@ function FoodRow({
   food,
   mine,
   reload,
+  readOnly,
   onCopy,
   onModify,
 }: {
   food: Food;
   mine: boolean;
   reload: () => void;
+  readOnly: boolean;
   onCopy: () => void;
   onModify: () => void;
 }) {
@@ -1555,6 +1582,7 @@ function FoodRow({
         </small>
       </span>
       <span>{food.calories} cal</span>
+      {!readOnly && (
       <div className="row-actions">
         {mine ? (
           <button className="ghost" onClick={onModify}>
@@ -1577,21 +1605,35 @@ function FoodRow({
           </button>
         )}
       </div>
+      )}
     </div>
   );
 }
 
-function SavedMeals({ user }: { user: User }) {
+function SavedMeals({
+  user,
+  viewingUser,
+}: {
+  user: User;
+  viewingUser?: FriendUser | null;
+}) {
   const [meals, setMeals] = useState<SavedMeal[]>([]);
   const [scope, setScope] = useState("all");
   const [search, setSearch] = useState("");
   const [editingMeal, setEditingMeal] = useState<SavedMeal | null>(null);
+  const readOnly = Boolean(viewingUser);
   const load = () => {
     api<{ meals: SavedMeal[] }>(
-      `/saved-meals?scope=${scope}&search=${encodeURIComponent(search)}`,
+      withOwner(
+        `/saved-meals?scope=${readOnly ? "mine" : scope}&search=${encodeURIComponent(search)}`,
+        viewingUser,
+      ),
     ).then((res) => setMeals(res.meals));
   };
-  useEffect(load, [scope, search]);
+  useEffect(load, [scope, search, viewingUser?.id]);
+  useEffect(() => {
+    setEditingMeal(null);
+  }, [viewingUser?.id]);
   async function handleMealSaved() {
     setScope("all");
     setSearch("");
@@ -1600,13 +1642,15 @@ function SavedMeals({ user }: { user: User }) {
   }
   return (
     <section>
-      <Header title="Saved Meals" icon={<ChefHat />} />
+      <Header title={viewingUser ? `${viewingUser.name}'s Saved Meals` : "Saved Meals"} icon={<ChefHat />} />
       <SearchTools
         scope={scope}
         setScope={setScope}
         search={search}
         setSearch={setSearch}
+        showScope={!readOnly}
       />
+      {!readOnly && (
       <Panel title={editingMeal ? "Modify Meal" : "Create Meal"}>
         <MealForm
           meal={editingMeal}
@@ -1614,6 +1658,7 @@ function SavedMeals({ user }: { user: User }) {
           onCancel={() => setEditingMeal(null)}
         />
       </Panel>
+      )}
       <Panel title="Meal List">
         <div className="list">
           {meals.map((meal) => (
@@ -1637,6 +1682,7 @@ function SavedMeals({ user }: { user: User }) {
                   </div>
                 )}
               </span>
+              {!readOnly && (
               <div className="row-actions">
                 {meal.ownerUserId === user.id ? (
                   <button
@@ -1669,6 +1715,7 @@ function SavedMeals({ user }: { user: User }) {
                   </button>
                 )}
               </div>
+              )}
             </div>
           ))}
         </div>
@@ -2199,13 +2246,15 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
   );
 }
 
-function Goals() {
+function Goals({ viewingUser }: { viewingUser?: FriendUser | null }) {
   const [activePlan, setActivePlan] = useState<any>(null);
   const [goalMode, setGoalMode] = useState<"date" | "pace">("date");
-  const loadActive = () => api("/goal-plans/active").then(setActivePlan);
+  const readOnly = Boolean(viewingUser);
+  const loadActive = () => api(withOwner("/goal-plans/active", viewingUser)).then(setActivePlan);
   useEffect(() => {
+    setActivePlan(null);
     void loadActive();
-  }, []);
+  }, [viewingUser?.id]);
   const maintenance = activePlan?.maintenance;
   const calculation = activePlan?.calculation;
   const allGoals: any[] = [];
@@ -2215,7 +2264,7 @@ function Goals() {
   const getStatus = (_targetDate: string) => "ongoing";
   return (
     <section>
-      <Header title="Goals" icon={<Target />} />
+      <Header title={viewingUser ? `${viewingUser.name}'s Goals` : "Goals"} icon={<Target />} />
       {activePlan?.plan && (
         <Panel title="Current Goal">
           <p>
@@ -2306,6 +2355,12 @@ function Goals() {
           )}
         </Panel>
       )}
+      {readOnly && !activePlan?.plan && (
+        <Panel title="Current Goal">
+          <p>No active goal plan.</p>
+        </Panel>
+      )}
+      {!readOnly && (
       <Panel title="Goal Plan">
         <form
           onSubmit={async (event) => {
@@ -2371,6 +2426,7 @@ function Goals() {
           </button>
         </form>
       </Panel>
+      )}
       {false && (
         <>
         <Panel title="Suggested Calories">
@@ -2472,27 +2528,53 @@ function dailyGoalsSnapshot(goals: DailyGoal[]) {
 
 function SettingsPage({
   user,
+  viewingUser,
   setUser,
   onLogout,
 }: {
   user: User;
+  viewingUser?: FriendUser | null;
   setUser: (user: User) => void;
   onLogout: () => void;
 }) {
+  const readOnly = Boolean(viewingUser);
+  const [settingsUser, setSettingsUser] = useState(user);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState("");
-  const [settingsForm, setSettingsForm] = useState(() => getSettingsForm(user));
+  const [settingsForm, setSettingsForm] = useState(() => getSettingsForm(settingsUser));
   const [savingSettings, setSavingSettings] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
-  const savedSettingsForm = useMemo(() => getSettingsForm(user), [user]);
+  const savedSettingsForm = useMemo(() => getSettingsForm(settingsUser), [settingsUser]);
   const settingsChanged = useMemo(
     () => JSON.stringify(settingsForm) !== JSON.stringify(savedSettingsForm),
     [settingsForm, savedSettingsForm],
   );
 
   useEffect(() => {
-    setSettingsForm(getSettingsForm(user));
-  }, [user]);
+    if (!readOnly) {
+      setSettingsUser(user);
+      setSettingsForm(getSettingsForm(user));
+      return;
+    }
+
+    let cancelled = false;
+    api<{ user: User }>(withOwner("/me/settings", viewingUser))
+      .then((res) => {
+        if (cancelled) return;
+        setSettingsUser(res.user);
+        setSettingsForm(getSettingsForm(res.user));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSettingsUser(user);
+          setSettingsForm(getSettingsForm(user));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [readOnly, user, viewingUser?.id]);
 
   const updateSettingsField = (field: keyof SettingsForm, value: string) => {
     setSaveMessage("");
@@ -2511,6 +2593,7 @@ function SettingsPage({
     [dailyGoals, savedDailyGoals],
   );
   const canSaveSettings =
+    !readOnly &&
     (settingsChanged || dailyGoalsChanged) && !savingSettings;
 
   useEffect(() => {
@@ -2519,7 +2602,7 @@ function SettingsPage({
     let cancelled = false;
     setLoadingActiveGoal(true);
     setActiveGoalError("");
-    api<ActiveGoal>("/goal-plans/active")
+    api<ActiveGoal>(withOwner("/goal-plans/active", viewingUser))
       .then((goal) => {
         if (!cancelled) setActiveGoal(goal);
       })
@@ -2536,10 +2619,10 @@ function SettingsPage({
     return () => {
       cancelled = true;
     };
-  }, [isCalculatedCalorieGoal]);
+  }, [isCalculatedCalorieGoal, viewingUser?.id]);
 
   useEffect(() => {
-    api<{ goals: DailyGoal[] }>("/daily-goals")
+    api<{ goals: DailyGoal[] }>(withOwner("/daily-goals", viewingUser))
       .then((res) => {
         setDailyGoals(res.goals);
         setSavedDailyGoals(res.goals);
@@ -2548,7 +2631,7 @@ function SettingsPage({
         setDailyGoals([]);
         setSavedDailyGoals([]);
       });
-  }, []);
+  }, [viewingUser?.id]);
 
   const updateDailyGoal = (id: string, patch: Partial<DailyGoal>) => {
     setSaveMessage("");
@@ -2597,7 +2680,7 @@ function SettingsPage({
 
   return (
     <section>
-      <Header title="Settings" icon={<Settings />} />
+      <Header title={viewingUser ? `${viewingUser.name}'s Settings` : "Settings"} icon={<Settings />} />
       <form onSubmit={saveSettings}>
         <Panel title="User Settings">
           <div className="settings-row">
@@ -2610,6 +2693,7 @@ function SettingsPage({
                   updateSettingsField("firstName", event.target.value)
                 }
                 placeholder="First"
+                disabled={readOnly}
               />
             </label>
             <label className="field">
@@ -2621,6 +2705,7 @@ function SettingsPage({
                   updateSettingsField("lastName", event.target.value)
                 }
                 placeholder="Last"
+                disabled={readOnly}
               />
             </label>
           </div>
@@ -2633,6 +2718,7 @@ function SettingsPage({
                 onChange={(event) =>
                   updateSettingsField("preferredWeightUnit", event.target.value)
                 }
+                disabled={readOnly}
               >
                 <option>lb</option>
                 <option>kg</option>
@@ -2649,6 +2735,7 @@ function SettingsPage({
                   updateSettingsField("proteinGoalG", event.target.value)
                 }
                 placeholder=""
+                disabled={readOnly}
               />
             </label>
           </div>
@@ -2661,6 +2748,7 @@ function SettingsPage({
                 onChange={(event) =>
                   updateSettingsField("calorieGoalType", event.target.value)
                 }
+                disabled={readOnly}
               >
                 <option value="manual">Manual</option>
                 <option value="goal-based">Calculated</option>
@@ -2678,6 +2766,7 @@ function SettingsPage({
                     updateSettingsField("calorieGoalValue", event.target.value)
                   }
                   placeholder=""
+                  disabled={readOnly}
                 />
               </label>
             )}
@@ -2713,6 +2802,7 @@ function SettingsPage({
               onChange={(event) =>
                 updateSettingsField("timezone", event.target.value)
               }
+              disabled={readOnly}
             >
               {timezones.map((timezone) => (
                 <option key={timezone} value={timezone}>
@@ -2730,6 +2820,7 @@ function SettingsPage({
                   <input
                     type="checkbox"
                     checked={goal.active}
+                    disabled={readOnly}
                     onChange={(event) =>
                       updateDailyGoal(goal.id, { active: event.target.checked })
                     }
@@ -2744,6 +2835,7 @@ function SettingsPage({
                     step="1"
                     min="1"
                     value={goal.minutes ?? ""}
+                    disabled={readOnly}
                     onChange={(event) =>
                       updateDailyGoal(goal.id, {
                         minutes: Number(event.target.value),
@@ -2759,6 +2851,7 @@ function SettingsPage({
                     step="1"
                     min="1"
                     value={goal.minutes ?? ""}
+                    disabled={readOnly}
                     onChange={(event) =>
                       updateDailyGoal(goal.id, {
                         minutes: Number(event.target.value),
@@ -2771,6 +2864,7 @@ function SettingsPage({
                 {goal.goalType === "custom" && (
                   <input
                     value={goal.label}
+                    disabled={readOnly}
                     onChange={(event) =>
                       updateDailyGoal(goal.id, { label: event.target.value })
                     }
@@ -2779,6 +2873,7 @@ function SettingsPage({
                 )}
               </div>
             ))}
+            {!readOnly && (
             <div className="daily-goal-setting">
               <input
                 value={newGoalLabel}
@@ -2810,8 +2905,10 @@ function SettingsPage({
                 <Plus size={16} /> Add
               </button>
             </div>
+            )}
           </div>
         </Panel>
+        {!readOnly && (
         <div className="settings-save-row">
           <button disabled={!canSaveSettings}>
             <Settings size={16} />{" "}
@@ -2823,7 +2920,10 @@ function SettingsPage({
           </button>
           {saveMessage && <span className="success-text">{saveMessage}</span>}
         </div>
+        )}
       </form>
+      {!readOnly && (
+      <>
       <Panel title="Danger Zone">
         <button
           className="danger-button"
@@ -2868,6 +2968,8 @@ function SettingsPage({
           <LogOut size={16} /> Logout
         </button>
       </Panel>
+      </>
+      )}
     </section>
   );
 }
@@ -2942,11 +3044,13 @@ function SearchTools({
   setScope,
   search,
   setSearch,
+  showScope = true,
 }: {
   scope: string;
   setScope: (scope: string) => void;
   search: string;
   setSearch: (search: string) => void;
+  showScope?: boolean;
 }) {
   return (
     <div className="toolbar">
@@ -2955,11 +3059,13 @@ function SearchTools({
         value={search}
         onChange={(event) => setSearch(event.target.value)}
       />
+      {showScope && (
       <select value={scope} onChange={(event) => setScope(event.target.value)}>
         <option value="all">All</option>
         <option value="mine">Mine</option>
         <option value="public">Public</option>
       </select>
+      )}
     </div>
   );
 }

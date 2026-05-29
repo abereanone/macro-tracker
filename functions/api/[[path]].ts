@@ -96,6 +96,7 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     const user = await requireUser(ctx);
 
     if (method === 'GET' && path === '/me') return json({ ok: true, user: mapUser(user) });
+    if (method === 'GET' && path === '/me/settings') return getSettings(await readableUser(ctx, user, url));
     if (method === 'PUT' && path === '/me/settings') return updateSettings(ctx, user);
     if (method === 'POST' && path === '/me/delete-data') return deleteMyData(ctx, user);
     if (path === '/help-dismissals' && method === 'GET') return listHelpDismissals(ctx, user);
@@ -107,13 +108,13 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     if (path === '/friend-invites/accept' && method === 'POST') return acceptFriendInvite(ctx, user);
     if (segments[0] === 'friend-invites' && segments[1] && method === 'DELETE') return revokeFriendInvite(ctx, user, segments[1]);
 
-    if (path === '/foods' && method === 'GET') return listFoods(ctx, user, url);
+    if (path === '/foods' && method === 'GET') return listFoods(ctx, await readableUser(ctx, user, url), url);
     if (path === '/foods' && method === 'POST') return createFood(ctx, user);
     if (segments[0] === 'foods' && segments[1] && method === 'PUT') return updateFood(ctx, user, segments[1]);
     if (segments[0] === 'foods' && segments[1] && method === 'DELETE') return archiveFood(ctx, user, segments[1]);
     if (segments[0] === 'foods' && segments[1] && segments[2] === 'copy' && method === 'POST') return copyFood(ctx, user, segments[1]);
 
-    if (path === '/saved-meals' && method === 'GET') return listMeals(ctx, user, url);
+    if (path === '/saved-meals' && method === 'GET') return listMeals(ctx, await readableUser(ctx, user, url), url);
     if (path === '/saved-meals' && method === 'POST') return createMeal(ctx, user);
     if (segments[0] === 'saved-meals' && segments[1] && method === 'PUT') return updateMeal(ctx, user, segments[1]);
     if (segments[0] === 'saved-meals' && segments[1] && method === 'DELETE') return archiveMeal(ctx, user, segments[1]);
@@ -133,7 +134,7 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     if (path === '/reports/summary' && method === 'GET') return reportSummary(ctx, await readableUser(ctx, user, url), url);
     if (path === '/reports/maintenance' && method === 'GET') return reportMaintenance(ctx, await readableUser(ctx, user, url), url);
     if (path === '/reports/two-week-weight-loss' && method === 'GET') return reportTwoWeekWeightLoss(ctx, await readableUser(ctx, user, url));
-    if (path === '/daily-goals' && method === 'GET') return listDailyGoals(ctx, user);
+    if (path === '/daily-goals' && method === 'GET') return listDailyGoals(ctx, await readableUser(ctx, user, url));
     if (path === '/daily-goals' && method === 'PUT') return updateDailyGoals(ctx, user);
     if (path === '/daily-goal-completions' && method === 'POST') return setDailyGoalCompletion(ctx, user);
     if (path === '/goal-plans' && method === 'POST') return createGoalPlan(ctx, user);
@@ -580,6 +581,10 @@ async function dismissHelp(ctx: Ctx, user: DbUser) {
     .bind(id(), user.id, helpKey)
     .run();
   return listHelpDismissals(ctx, user);
+}
+
+function getSettings(user: DbUser) {
+  return json({ ok: true, user: mapUser(user) });
 }
 
 async function updateSettings(ctx: Ctx, user: DbUser) {
