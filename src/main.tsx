@@ -2220,20 +2220,29 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
         <Metric label="Logged Days" value={summary?.days?.length ?? 0} />
         <Metric label="Weights" value={summary?.weights?.length ?? 0} />
       </div>
-      <Panel title="Weight Loss Over Last Two Weeks">
+      <Panel title="Weight Change Over Last Two Weeks">
         {twoWeekWeightLoss?.error ? (
           <p>{twoWeekWeightLoss.error}</p>
         ) : twoWeekWeightLoss?.canCalculate === false ? (
           <p>{twoWeekWeightLoss.message}</p>
         ) : twoWeekWeightLoss ? (
-          <p>
-            From {twoWeekWeightLoss.startWeight.date} at{" "}
-            {twoWeekWeightLoss.startWeight.value}{" "}
-            {twoWeekWeightLoss.startWeight.unit} to today at{" "}
-            {twoWeekWeightLoss.endWeight.value}{" "}
-            {twoWeekWeightLoss.endWeight.unit}, weight loss is{" "}
-            <strong>{twoWeekWeightLoss.weightLossLb} lb</strong>.
-          </p>
+          (() => {
+            const lossLb = twoWeekWeightLoss.weightLossLb;
+            const isGain = lossLb < 0;
+            const absDiff = Math.abs(lossLb).toFixed(1);
+            const label = isGain ? "GAIN" : "LOSS";
+            const color = isGain ? "red" : "green";
+            return (
+              <p>
+                From {twoWeekWeightLoss.startWeight.date} at{" "}
+                {twoWeekWeightLoss.startWeight.value}{" "}
+                {twoWeekWeightLoss.startWeight.unit} to today at{" "}
+                {twoWeekWeightLoss.endWeight.value}{" "}
+                {twoWeekWeightLoss.endWeight.unit}, weight{" "}
+                <strong style={{ color }}>{label}</strong> is {absDiff} lb.
+              </p>
+            );
+          })()
         ) : null}
       </Panel>
       <Panel title="Weight by Day">
