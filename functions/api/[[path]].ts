@@ -297,7 +297,7 @@ async function requestLoginCode(ctx: Ctx) {
 
   const resend = new Resend(ctx.env.RESEND_API_KEY);
   await resend.emails.send({
-    from: 'Macro Tracker <login@macros.michaelcoughlin.net>',
+    from: 'Macro Tracker <login@michaelcoughlin.net>',
     to: email,
     subject: 'Your Macro Tracker login code',
     text: `Your Macro Tracker login code is ${code}. It expires in 10 minutes.`,
@@ -510,7 +510,7 @@ async function createFriendInvite(ctx: Ctx, user: DbUser, url: URL) {
   const inviteUrl = `${url.origin}/app/friends?invite=${encodeURIComponent(token)}`;
   const resend = new Resend(ctx.env.RESEND_API_KEY);
   await resend.emails.send({
-    from: 'Macro Tracker <login@macros.michaelcoughlin.net>',
+    from: 'Macro Tracker <login@michaelcoughlin.net>',
     to: email,
     subject: `${displayName(user)} invited you to view their Macro Tracker`,
     text: `${displayName(user)} invited you to view their Macro Tracker diary and progress.\n\nAccept the invite here: ${inviteUrl}\n\nIf you do not want access, you can ignore this email. This invite expires in 14 days.`,

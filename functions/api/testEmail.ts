@@ -6,7 +6,7 @@ export async function onRequestPost(context: any) {
   const { to } = await context.request.json();
 
   const result = await resend.emails.send({
-    from: "Macro Tracker <login@macros.michaelcoughlin.net>",
+    from: "Macro Tracker <login@michaelcoughlin.net>",
     to,
     subject: "Macro Tracker test email",
     text: "This is a test email from Macro Tracker."
