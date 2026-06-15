@@ -426,7 +426,7 @@ function App() {
     );
 
   const page = {
-    app: <Dashboard user={user} viewingUser={viewingFriend} />,
+    app: <Dashboard user={user} viewingUser={viewingFriend} onNavigate={navigate} />,
     foods: <Foods user={user} viewingUser={viewingFriend} />,
     "saved-meals": <SavedMeals user={user} viewingUser={viewingFriend} />,
     reports: <Reports viewingUser={viewingFriend} />,
@@ -445,7 +445,7 @@ function App() {
         onLogout={logout}
       />
     ),
-  }[route] ?? <Dashboard user={user} />;
+  }[route] ?? <Dashboard user={user} onNavigate={navigate} />;
 
   return (
     <div className="shell">
@@ -737,9 +737,11 @@ function withOwner(path: string, viewingUser?: FriendUser | null) {
 function Dashboard({
   user,
   viewingUser,
+  onNavigate,
 }: {
   user: User;
   viewingUser?: FriendUser | null;
+  onNavigate?: (route: Route) => void;
 }) {
   const [date, setDate] = useState(today());
   const [day, setDay] = useState<any>(null);
@@ -1062,6 +1064,7 @@ function Dashboard({
                     }),
                   });
                   load();
+                  onNavigate?.("reports");
                 } finally {
                   setSavingWeight(false);
                 }
@@ -2200,13 +2203,19 @@ function FriendsPage({
 }
 
 function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
-  const [start, setStart] = useState(() => daysAgo(34));
-  const [end, setEnd] = useState(today());
-  const [summary, setSummary] = useState<any>(null);
+  const [calStart, setCalStart] = useState(() => daysAgo(14));
+  const [calEnd, setCalEnd] = useState(today());
+  const [weightStart, setWeightStart] = useState(() => daysAgo(34));
+  const [weightEnd, setWeightEnd] = useState(today());
+  const [calSummary, setCalSummary] = useState<any>(null);
+  const [weightSummary, setWeightSummary] = useState<any>(null);
   const [twoWeekWeightLoss, setTwoWeekWeightLoss] = useState<any>(null);
   useEffect(() => {
-    api(withOwner(`/reports/summary?start=${start}&end=${end}`, viewingUser)).then(setSummary);
-  }, [start, end, viewingUser?.id]);
+    api(withOwner(`/reports/summary?start=${calStart}&end=${calEnd}`, viewingUser)).then(setCalSummary);
+  }, [calStart, calEnd, viewingUser?.id]);
+  useEffect(() => {
+    api(withOwner(`/reports/summary?start=${weightStart}&end=${weightEnd}`, viewingUser)).then(setWeightSummary);
+  }, [weightStart, weightEnd, viewingUser?.id]);
   useEffect(() => {
     api(withOwner("/reports/two-week-weight-loss", viewingUser))
       .then(setTwoWeekWeightLoss)
@@ -2215,16 +2224,16 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
   return (
     <section>
       <Header title={viewingUser ? `${viewingUser.name}'s Reports` : "Reports"} icon={<BarChart3 />} />
-      <DateRange start={start} end={end} setStart={setStart} setEnd={setEnd} />
-      <div className="metric-grid">
-        <Metric label="Logged Days" value={summary?.days?.length ?? 0} />
-        <Metric label="Weights" value={summary?.weights?.length ?? 0} />
-      </div>
       <Panel title="Weight Change Over Last Two Weeks">
         {twoWeekWeightLoss?.error ? (
           <p>{twoWeekWeightLoss.error}</p>
         ) : twoWeekWeightLoss?.canCalculate === false ? (
-          <p>{twoWeekWeightLoss.message}</p>
+          <>
+            <p>{twoWeekWeightLoss.message}</p>
+            {twoWeekWeightLoss.sevenDayAvgLb != null && (
+              <p>Your average weight for the past 7 days was {twoWeekWeightLoss.sevenDayAvgLb} lb.</p>
+            )}
+          </>
         ) : twoWeekWeightLoss ? (
           (() => {
             const lossLb = twoWeekWeightLoss.weightLossLb;
@@ -2233,23 +2242,31 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
             const label = isGain ? "GAIN" : "LOSS";
             const color = isGain ? "red" : "green";
             return (
-              <p>
-                From {twoWeekWeightLoss.startWeight.date} at{" "}
-                {twoWeekWeightLoss.startWeight.value}{" "}
-                {twoWeekWeightLoss.startWeight.unit} to today at{" "}
-                {twoWeekWeightLoss.endWeight.value}{" "}
-                {twoWeekWeightLoss.endWeight.unit}, weight{" "}
-                <strong style={{ color }}>{label}</strong> is {absDiff} lb.
-              </p>
+              <>
+                <p>
+                  From {twoWeekWeightLoss.startWeight.date} at{" "}
+                  {twoWeekWeightLoss.startWeight.value}{" "}
+                  {twoWeekWeightLoss.startWeight.unit} to today at{" "}
+                  {twoWeekWeightLoss.endWeight.value}{" "}
+                  {twoWeekWeightLoss.endWeight.unit}, weight{" "}
+                  <strong style={{ color, fontSize: "1.4em" }}>{label}</strong>{" "}
+                  is {absDiff} lb.
+                </p>
+                {twoWeekWeightLoss.sevenDayAvgLb != null && (
+                  <p>Your average weight for the past 7 days was {twoWeekWeightLoss.sevenDayAvgLb} lb.</p>
+                )}
+              </>
             );
           })()
         ) : null}
       </Panel>
       <Panel title="Weight by Day">
-        <WeightBars rows={summary?.weights ?? []} />
+        <DateRange start={weightStart} end={weightEnd} setStart={setWeightStart} setEnd={setWeightEnd} />
+        <WeightBars rows={weightSummary?.weights ?? []} />
       </Panel>
       <Panel title="Calories by Day">
-        <Bars rows={summary?.days ?? []} />
+        <DateRange start={calStart} end={calEnd} setStart={setCalStart} setEnd={setCalEnd} />
+        <Bars rows={calSummary?.days ?? []} />
       </Panel>
     </section>
   );

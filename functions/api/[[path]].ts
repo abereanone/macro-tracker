@@ -1180,6 +1180,13 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
   const weights = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? AND entry_date BETWEEN ? AND ? ORDER BY entry_date')
     .bind(user.id, window.start, window.end)
     .all<DbWeight>();
+
+  const sevenDaysAgo = addDays(window.end, -7);
+  const last7 = weights.results.filter((w) => w.entry_date >= sevenDaysAgo);
+  const sevenDayAvgLb = last7.length > 0
+    ? Math.round((last7.reduce((sum, w) => sum + toLb(w.weight_value, w.weight_unit), 0) / last7.length) * 10) / 10
+    : null;
+
   const todayWeight = weights.results.find((weight) => weight.entry_date === window.end);
   if (!todayWeight) {
     return json({
@@ -1187,6 +1194,7 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
       canCalculate: false,
       start: window.start,
       end: window.end,
+      sevenDayAvgLb,
       message: "Add today's weight to calculate weight loss over the last two weeks.",
     });
   }
@@ -1199,6 +1207,7 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
       start: window.start,
       end: window.end,
       endWeight: mapWeightPoint(todayWeight),
+      sevenDayAvgLb,
       message: 'Add an earlier weight entry from the last two weeks to calculate weight loss.',
     });
   }
@@ -1214,6 +1223,7 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
     endWeight: end,
     days: calendarDaysInclusive(start.date, end.date) - 1,
     weightLossLb: Math.round((start.valueLb - end.valueLb + Number.EPSILON) * 100) / 100,
+    sevenDayAvgLb,
   });
 }
 
