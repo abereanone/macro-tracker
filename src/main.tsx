@@ -2228,34 +2228,32 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
         {twoWeekWeightLoss?.error ? (
           <p>{twoWeekWeightLoss.error}</p>
         ) : twoWeekWeightLoss?.canCalculate === false ? (
-          <>
-            <p>{twoWeekWeightLoss.message}</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.4em" }}>
+            <span>{twoWeekWeightLoss.message}</span>
             {twoWeekWeightLoss.sevenDayAvgLb != null && (
-              <p>Your average weight for the past 7 days was {twoWeekWeightLoss.sevenDayAvgLb} lb.</p>
+              <span><strong>Avg this week:</strong> {twoWeekWeightLoss.sevenDayAvgLb} lb</span>
             )}
-          </>
+          </div>
         ) : twoWeekWeightLoss ? (
           (() => {
             const lossLb = twoWeekWeightLoss.weightLossLb;
             const isGain = lossLb < 0;
             const absDiff = Math.abs(lossLb).toFixed(1);
-            const label = isGain ? "GAIN" : "LOSS";
             const color = isGain ? "red" : "green";
+            const verb = isGain ? "Gained" : "Lost";
+            const { endWeight, startWeight, sevenDayAvgLb } = twoWeekWeightLoss;
             return (
-              <>
-                <p>
-                  From {twoWeekWeightLoss.startWeight.date} at{" "}
-                  {twoWeekWeightLoss.startWeight.value}{" "}
-                  {twoWeekWeightLoss.startWeight.unit} to today at{" "}
-                  {twoWeekWeightLoss.endWeight.value}{" "}
-                  {twoWeekWeightLoss.endWeight.unit}, weight{" "}
-                  <strong style={{ color, fontSize: "1.4em" }}>{label}</strong>{" "}
-                  is {absDiff} lb.
-                </p>
-                {twoWeekWeightLoss.sevenDayAvgLb != null && (
-                  <p>Your average weight for the past 7 days was {twoWeekWeightLoss.sevenDayAvgLb} lb.</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.4em" }}>
+                <span><strong>Weight:</strong> {endWeight.value} {endWeight.unit}</span>
+                <span>
+                  <strong>Change:</strong>{" "}
+                  <strong style={{ color }}>{verb} {absDiff} lb</strong>{" "}
+                  since {startWeight.date}
+                </span>
+                {sevenDayAvgLb != null && (
+                  <span><strong>Avg this week:</strong> {sevenDayAvgLb} lb</span>
                 )}
-              </>
+              </div>
             );
           })()
         ) : null}
