@@ -1181,21 +1181,31 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
     .bind(user.id, window.start, window.end)
     .all<DbWeight>();
 
-  const sevenDaysAgo = addDays(window.end, -7);
-  const last7 = weights.results.filter((w) => w.entry_date >= sevenDaysAgo);
-  const sevenDayAvgLb = last7.length > 0
-    ? Math.round((last7.reduce((sum, w) => sum + toLb(w.weight_value, w.weight_unit), 0) / last7.length) * 10) / 10
-    : null;
+  // Try weekly average method first
+  const weeklyAvgs = computeWeeklyAverages(weights.results, window.end);
+  if (weeklyAvgs) {
+    const { priorAvgLb, recentAvgLb, priorWeekStart, priorWeekEnd, recentWeekStart, recentWeekEnd } = weeklyAvgs;
+    return json({
+      ok: true,
+      canCalculate: true,
+      useWeeklyAverages: true,
+      priorAvgLb: Math.round(priorAvgLb * 10) / 10,
+      recentAvgLb: Math.round(recentAvgLb * 10) / 10,
+      priorWeekStart,
+      priorWeekEnd,
+      recentWeekStart,
+      recentWeekEnd,
+      weightLossLb: Math.round((priorAvgLb - recentAvgLb + Number.EPSILON) * 100) / 100,
+    });
+  }
 
+  // Fall back to single-weight method
   const todayWeight = weights.results.find((weight) => weight.entry_date === window.end);
   if (!todayWeight) {
     return json({
       ok: true,
       canCalculate: false,
-      start: window.start,
-      end: window.end,
-      sevenDayAvgLb,
-      message: "Add today's weight to calculate weight loss over the last two weeks.",
+      message: "Add a weight entry in the past 7 days and the prior 7 days to calculate weight change.",
     });
   }
 
@@ -1204,10 +1214,7 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
     return json({
       ok: true,
       canCalculate: false,
-      start: window.start,
-      end: window.end,
       endWeight: mapWeightPoint(todayWeight),
-      sevenDayAvgLb,
       message: 'Add an earlier weight entry from the last two weeks to calculate weight loss.',
     });
   }
@@ -1217,13 +1224,10 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
   return json({
     ok: true,
     canCalculate: true,
-    windowStart: window.start,
-    windowEnd: window.end,
+    useWeeklyAverages: false,
     startWeight: start,
     endWeight: end,
-    days: calendarDaysInclusive(start.date, end.date) - 1,
     weightLossLb: Math.round((start.valueLb - end.valueLb + Number.EPSILON) * 100) / 100,
-    sevenDayAvgLb,
   });
 }
 

@@ -2241,7 +2241,20 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
             const absDiff = Math.abs(lossLb).toFixed(1);
             const color = isGain ? "red" : "green";
             const verb = isGain ? "Gained" : "Lost";
-            const { endWeight, startWeight, sevenDayAvgLb } = twoWeekWeightLoss;
+            if (twoWeekWeightLoss.useWeeklyAverages) {
+              const { priorAvgLb, recentAvgLb, priorWeekStart, priorWeekEnd, recentWeekStart, recentWeekEnd } = twoWeekWeightLoss;
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.4em" }}>
+                  <span><strong>This week avg</strong> ({recentWeekStart}–{recentWeekEnd}): {recentAvgLb} lb</span>
+                  <span><strong>Prior week avg</strong> ({priorWeekStart}–{priorWeekEnd}): {priorAvgLb} lb</span>
+                  <span>
+                    <strong>Change:</strong>{" "}
+                    <strong style={{ color }}>{verb} {absDiff} lb</strong>
+                  </span>
+                </div>
+              );
+            }
+            const { endWeight, startWeight } = twoWeekWeightLoss;
             return (
               <div style={{ display: "flex", flexDirection: "column", gap: "0.4em" }}>
                 <span><strong>Weight:</strong> {endWeight.value} {endWeight.unit}</span>
@@ -2250,9 +2263,6 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
                   <strong style={{ color }}>{verb} {absDiff} lb</strong>{" "}
                   since {startWeight.date}
                 </span>
-                {sevenDayAvgLb != null && (
-                  <span><strong>Avg this week:</strong> {sevenDayAvgLb} lb</span>
-                )}
               </div>
             );
           })()
@@ -2321,28 +2331,36 @@ function Goals({ viewingUser }: { viewingUser?: FriendUser | null }) {
               </strong>
               {maintenance.source === "weigh-in" ? (
                 <>
+                  {maintenance.priorAvgLb != null ? (
+                    <span>
+                      Using weekly weight averages: prior week average was{" "}
+                      <strong>{maintenance.priorAvgLb} lb</strong>, recent week
+                      average is <strong>{maintenance.recentAvgLb} lb</strong>.
+                    </span>
+                  ) : (
+                    <span>
+                      Using single weights from {maintenance.start} to {maintenance.end}.
+                    </span>
+                  )}
                   <span>
-                    This is calculated by taking the available data from the
-                    last two weeks which shows an average logged intake of{" "}
+                    Average logged intake of{" "}
                     {Math.round(maintenance.averageLoggedCalories ?? 0)}{" "}
-                    calories/day for {maintenance.loggedDayCount} days with
-                    food entries in that {maintenance.windowDays ?? 14}-day
-                    window.
+                    calories/day for {maintenance.loggedDayCount} logged days in
+                    that {maintenance.windowDays ?? 14}-day window.
                   </span>
                   <span>
-                    Your weight changed {maintenance.weightChangeLb} lb, implying
+                    Weight changed {maintenance.weightChangeLb} lb, implying
                     a daily {maintenance.weightChangeLb < 0 ? "deficit" : "surplus"} of |
                     {maintenance.weightChangeLb} × 3500 / {maintenance.days}| ={" "}
                     {Math.round(
                       Math.abs(maintenance.dailyWeightAdjustment ?? 0),
                     )}{" "}
-                    calories/day over that period.
+                    calories/day.
                   </span>
                   <span>
-                    Thus, the number of calories you needed to stay the same
-                    weight was{" "}
-                    {Math.round(maintenance.averageLoggedCalories ?? 0)} - (
-                    {maintenance.weightChangeLb} x 3500 / {maintenance.days}) ={" "}
+                    Maintenance ={" "}
+                    {Math.round(maintenance.averageLoggedCalories ?? 0)} − (
+                    {maintenance.weightChangeLb} × 3500 / {maintenance.days}) ={" "}
                     {maintenance.maintenanceCalories} calories/day.
                   </span>
                 </>
