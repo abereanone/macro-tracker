@@ -271,6 +271,47 @@ function previousDate(date: string): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
 }
 
+export function estimateMaintenanceFromWeeklyAverages(input: {
+  priorAvgLb: number;
+  recentAvgLb: number;
+  priorWeekStart: string;
+  priorWeekEnd: string;
+  recentWeekStart: string;
+  recentWeekEnd: string;
+  loggedCaloriesByDay: { date: string; calories: number }[];
+}) {
+  const PERIOD_DAYS = 7;
+  const loggedDays = input.loggedCaloriesByDay.filter(
+    (day) => day.date >= input.priorWeekStart && day.date < input.recentWeekEnd,
+  );
+  if (!loggedDays.length) {
+    throw new Error('At least one logged food day is required in the maintenance window.');
+  }
+  const loggedCalories = loggedDays.reduce((sum, day) => sum + day.calories, 0);
+  const averageLoggedCalories = loggedCalories / loggedDays.length;
+  const weightChangeLb = input.recentAvgLb - input.priorAvgLb;
+  const dailyWeightAdjustment = (weightChangeLb * CALORIES_PER_POUND) / PERIOD_DAYS;
+  const estimatedMaintenanceCalories = averageLoggedCalories - dailyWeightAdjustment;
+
+  return {
+    start: input.priorWeekStart,
+    end: input.recentWeekEnd,
+    calorieStart: input.priorWeekStart,
+    calorieEnd: previousDate(input.recentWeekEnd),
+    days: PERIOD_DAYS,
+    windowDays: 14,
+    loggedDayCount: loggedDays.length,
+    loggedCalories: round(loggedCalories, 1),
+    averageLoggedCalories: round(averageLoggedCalories, 1),
+    estimatedPeriodCalories: round(averageLoggedCalories * PERIOD_DAYS, 1),
+    priorAvgLb: round(input.priorAvgLb, 1),
+    recentAvgLb: round(input.recentAvgLb, 1),
+    weightChangeLb: round(weightChangeLb, 2),
+    dailyWeightAdjustment: round(dailyWeightAdjustment, 0),
+    estimatedMaintenanceCalories: round(estimatedMaintenanceCalories, 0),
+  };
+}
+
 export function calculateGoalTarget(input: {
   currentWeightLb: number;
   goalWeightLb: number;
