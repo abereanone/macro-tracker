@@ -5,6 +5,7 @@ export const LB_TO_KG = 0.45359237;
 export const OZ_TO_G = 28.349523125;
 export const LB_TO_G = 453.59237;
 export const CALORIES_PER_POUND = 3500;
+export const CALORIES_PER_KG = CALORIES_PER_POUND * KG_TO_LB;
 
 export function round(value: number, places = 1): number {
   const factor = 10 ** places;
@@ -17,6 +18,10 @@ export function toLb(value: number, unit: WeightUnit): number {
 
 export function toKg(value: number, unit: WeightUnit): number {
   return unit === 'lb' ? value * LB_TO_KG : value;
+}
+
+export function fromLb(value: number, unit: WeightUnit): number {
+  return unit === 'kg' ? value * LB_TO_KG : value;
 }
 
 export function calculateLoggedNutrition(food: FoodNutrition, consumedQuantity: number): Nutrients {

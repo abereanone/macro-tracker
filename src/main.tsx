@@ -1,9 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  CALORIES_PER_KG,
+  CALORIES_PER_POUND,
   calculateLoggedNutrition,
   calculateTotals,
   convertConsumedQuantityToServingQuantity,
+  fromLb,
+  round,
 } from "./shared/calculations";
 import {
   Activity,
@@ -429,8 +433,8 @@ function App() {
     app: <Dashboard user={user} viewingUser={viewingFriend} onNavigate={navigate} />,
     foods: <Foods user={user} viewingUser={viewingFriend} />,
     "saved-meals": <SavedMeals user={user} viewingUser={viewingFriend} />,
-    reports: <Reports viewingUser={viewingFriend} />,
-    goals: <Goals viewingUser={viewingFriend} />,
+    reports: <Reports user={user} viewingUser={viewingFriend} />,
+    goals: <Goals user={user} viewingUser={viewingFriend} />,
     friends: (
       <FriendsPage
         viewingUser={viewingFriend}
@@ -830,7 +834,7 @@ function Dashboard({
     ? [
         `Current goal: ${activeGoal.plan.goal_weight_value} ${activeGoal.plan.goal_weight_unit} by ${activeGoal.plan.target_date}`,
         activeGoal.goalPace
-          ? `Needed average: ${activeGoal.goalPace.direction === "maintain" ? "maintain weight" : `${activeGoal.goalPace.direction} ${Math.abs(activeGoal.goalPace.weeklyChangeLb)} lb/week`} from ${activeGoal.goalPace.latestWeight.value} ${activeGoal.goalPace.latestWeight.unit} on ${activeGoal.goalPace.latestWeight.date}.`
+          ? `Needed average: ${activeGoal.goalPace.direction === "maintain" ? "maintain weight" : `${activeGoal.goalPace.direction} ${round(fromLb(Math.abs(activeGoal.goalPace.weeklyChangeLb), user.preferredWeightUnit), 2)} ${user.preferredWeightUnit}/week`} from ${activeGoal.goalPace.latestWeight.value} ${activeGoal.goalPace.latestWeight.unit} on ${activeGoal.goalPace.latestWeight.date}.`
           : "Add a current weight to calculate the weekly pace needed.",
       ].join("\n")
     : undefined;
@@ -2202,7 +2206,9 @@ function FriendsPage({
   );
 }
 
-function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
+function Reports({ user, viewingUser }: { user: User; viewingUser?: FriendUser | null }) {
+  const weightUnit = user.preferredWeightUnit;
+  const fmtLb = (lb: number) => `${round(fromLb(lb, weightUnit), 1)} ${weightUnit}`;
   const [calStart, setCalStart] = useState(() => daysAgo(14));
   const [calEnd, setCalEnd] = useState(today());
   const [weightStart, setWeightStart] = useState(() => daysAgo(34));
@@ -2231,25 +2237,25 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
           <div style={{ display: "flex", flexDirection: "column", gap: "0.4em" }}>
             <span>{twoWeekWeightLoss.message}</span>
             {twoWeekWeightLoss.sevenDayAvgLb != null && (
-              <span><strong>Avg this week:</strong> {twoWeekWeightLoss.sevenDayAvgLb} lb</span>
+              <span><strong>Avg this week:</strong> {fmtLb(twoWeekWeightLoss.sevenDayAvgLb)}</span>
             )}
           </div>
         ) : twoWeekWeightLoss ? (
           (() => {
             const lossLb = twoWeekWeightLoss.weightLossLb;
             const isGain = lossLb < 0;
-            const absDiff = Math.abs(lossLb).toFixed(1);
+            const absDiff = `${round(fromLb(Math.abs(lossLb), weightUnit), 1)} ${weightUnit}`;
             const color = isGain ? "red" : "green";
             const verb = isGain ? "Gained" : "Lost";
             if (twoWeekWeightLoss.useWeeklyAverages) {
               const { priorAvgLb, recentAvgLb, priorWeekStart, priorWeekEnd, recentWeekStart, recentWeekEnd } = twoWeekWeightLoss;
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.4em" }}>
-                  <span><strong>This week avg</strong> ({recentWeekStart}–{recentWeekEnd}): {recentAvgLb} lb</span>
-                  <span><strong>Prior week avg</strong> ({priorWeekStart}–{priorWeekEnd}): {priorAvgLb} lb</span>
+                  <span><strong>This week avg:</strong> {fmtLb(recentAvgLb)} ({recentWeekStart}–{recentWeekEnd})</span>
+                  <span><strong>Prior week avg:</strong> {fmtLb(priorAvgLb)} ({priorWeekStart}–{priorWeekEnd})</span>
                   <span>
                     <strong>Change:</strong>{" "}
-                    <strong style={{ color }}>{verb} {absDiff} lb</strong>
+                    <strong style={{ color }}>{verb} {absDiff}</strong>
                   </span>
                 </div>
               );
@@ -2260,7 +2266,7 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
                 <span><strong>Weight:</strong> {endWeight.value} {endWeight.unit}</span>
                 <span>
                   <strong>Change:</strong>{" "}
-                  <strong style={{ color }}>{verb} {absDiff} lb</strong>{" "}
+                  <strong style={{ color }}>{verb} {absDiff}</strong>{" "}
                   since {startWeight.date}
                 </span>
               </div>
@@ -2280,7 +2286,12 @@ function Reports({ viewingUser }: { viewingUser?: FriendUser | null }) {
   );
 }
 
-function Goals({ viewingUser }: { viewingUser?: FriendUser | null }) {
+function Goals({ user, viewingUser }: { user: User; viewingUser?: FriendUser | null }) {
+  const weightUnit = user.preferredWeightUnit;
+  const fmtLb = (lb: number) => `${round(fromLb(lb, weightUnit), 1)} ${weightUnit}`;
+  const fmtPaceLb = (lb: number) => `${round(fromLb(lb, weightUnit), 2)} ${weightUnit}/week`;
+  const caloriesPerUnit = weightUnit === "kg" ? CALORIES_PER_KG : CALORIES_PER_POUND;
+  const fmtUnit = (lb: number) => round(fromLb(lb, weightUnit), 1);
   const [activePlan, setActivePlan] = useState<any>(null);
   const [goalMode, setGoalMode] = useState<"date" | "pace">("date");
   const readOnly = Boolean(viewingUser);
@@ -2313,7 +2324,7 @@ function Goals({ viewingUser }: { viewingUser?: FriendUser | null }) {
             ) : (
               <p>
                 You need to {activePlan.goalPace.direction}{" "}
-                {Math.abs(activePlan.goalPace.weeklyChangeLb)} lb/week to
+                {fmtPaceLb(Math.abs(activePlan.goalPace.weeklyChangeLb))} to
                 achieve this goal
                 {calculation
                   ? ` which means a daily calorie deficit of ${calculation.dailyAdjustment}.`
@@ -2334,8 +2345,8 @@ function Goals({ viewingUser }: { viewingUser?: FriendUser | null }) {
                   {maintenance.priorAvgLb != null ? (
                     <span>
                       Using weekly weight averages: prior week average was{" "}
-                      <strong>{maintenance.priorAvgLb} lb</strong>, recent week
-                      average is <strong>{maintenance.recentAvgLb} lb</strong>.
+                      <strong>{fmtLb(maintenance.priorAvgLb)}</strong>, recent week
+                      average is <strong>{fmtLb(maintenance.recentAvgLb)}</strong>.
                     </span>
                   ) : (
                     <span>
@@ -2349,9 +2360,9 @@ function Goals({ viewingUser }: { viewingUser?: FriendUser | null }) {
                     that {maintenance.windowDays ?? 14}-day window.
                   </span>
                   <span>
-                    Weight changed {maintenance.weightChangeLb} lb, implying
+                    Weight changed {fmtLb(maintenance.weightChangeLb)}, implying
                     a daily {maintenance.weightChangeLb < 0 ? "deficit" : "surplus"} of |
-                    {maintenance.weightChangeLb} × 3500 / {maintenance.days}| ={" "}
+                    {fmtUnit(maintenance.weightChangeLb)} × {Math.round(caloriesPerUnit)} / {maintenance.days}| ={" "}
                     {Math.round(
                       Math.abs(maintenance.dailyWeightAdjustment ?? 0),
                     )}{" "}
@@ -2360,7 +2371,7 @@ function Goals({ viewingUser }: { viewingUser?: FriendUser | null }) {
                   <span>
                     Maintenance ={" "}
                     {Math.round(maintenance.averageLoggedCalories ?? 0)} − (
-                    {maintenance.weightChangeLb} × 3500 / {maintenance.days}) ={" "}
+                    {fmtUnit(maintenance.weightChangeLb)} × {Math.round(caloriesPerUnit)} / {maintenance.days}) ={" "}
                     {maintenance.maintenanceCalories} calories/day.
                   </span>
                 </>
@@ -2478,7 +2489,7 @@ function Goals({ viewingUser }: { viewingUser?: FriendUser | null }) {
             <strong>
               {activePlan.calculation.targetCalories} calories/day
             </strong>
-            . Required pace is {activePlan.calculation.weeklyChangeLb} lb/week.{" "}
+            . Required pace is {fmtPaceLb(activePlan.calculation.weeklyChangeLb)}.{" "}
             {activePlan.calculation.unrealistic &&
               "This target appears aggressive."}
           </p>
