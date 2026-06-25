@@ -47,6 +47,8 @@ form { display: grid; gap: 10px; }
 .field span { font-weight: 700; }
 .inline-field { gap: 3px; }
 .inline-field input { min-height: 24px; }
+.checkbox-field { grid-auto-flow: column; justify-content: start; align-items: center; gap: 8px; }
+.checkbox-field input[type="checkbox"] { width: auto; min-height: auto; }
 .shell { min-height: 100vh; display: grid; grid-template-columns: 240px 1fr; }
 .mobile-topbar { display: none; }
 .icon-button { width: 42px; padding: 0; }

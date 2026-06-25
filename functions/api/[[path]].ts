@@ -24,6 +24,8 @@ type DbUser = {
   calorie_goal_type: string;
   preferred_weight_unit: string | null;
   timezone: string | null;
+  show_public_foods: number;
+  show_public_meals: number;
 };
 type DbSession = { user_id: string };
 type DbFood = {
@@ -405,6 +407,8 @@ function mapUser(user: DbUser) {
     calorieGoalType: (user.calorie_goal_type ?? 'manual') as 'manual' | 'goal-based',
     preferredWeightUnit: user.preferred_weight_unit ?? 'lb',
     timezone: user.timezone ?? 'America/New_York',
+    showPublicFoods: user.show_public_foods !== 0,
+    showPublicMeals: Boolean(user.show_public_meals),
   };
 }
 
@@ -596,10 +600,12 @@ async function updateSettings(ctx: Ctx, user: DbUser) {
   const calorieGoalType = input.calorieGoalType === 'goal-based' ? 'goal-based' : 'manual';
   const unit = input.preferredWeightUnit ? requireWeightUnit(input.preferredWeightUnit) : 'lb';
   const timezone = typeof input.timezone === 'string' && input.timezone.trim() ? input.timezone.trim() : 'America/New_York';
+  const showPublicFoods = input.showPublicFoods === undefined ? user.show_public_foods : input.showPublicFoods ? 1 : 0;
+  const showPublicMeals = input.showPublicMeals === undefined ? user.show_public_meals : input.showPublicMeals ? 1 : 0;
   await ctx.env.DB.prepare(
-    'UPDATE users SET first_name = ?, last_name = ?, protein_goal_g = ?, calorie_goal_value = ?, calorie_goal_type = ?, preferred_weight_unit = ?, timezone = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    'UPDATE users SET first_name = ?, last_name = ?, protein_goal_g = ?, calorie_goal_value = ?, calorie_goal_type = ?, preferred_weight_unit = ?, timezone = ?, show_public_foods = ?, show_public_meals = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
   )
-    .bind(firstName, lastName, proteinGoal, calorieGoalValue, calorieGoalType, unit, timezone, user.id)
+    .bind(firstName, lastName, proteinGoal, calorieGoalValue, calorieGoalType, unit, timezone, showPublicFoods, showPublicMeals, user.id)
     .run();
   const updated = await ctx.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first<DbUser>();
   return json({ ok: true, user: mapUser(updated!) });
@@ -685,9 +691,9 @@ function requireServingGrams(servingQuantity: number, servingUnit: string, servi
 
 async function visibleFood(ctx: Ctx, user: DbUser, foodId: string) {
   const food = await ctx.env.DB.prepare(
-    'SELECT * FROM foods WHERE id = ? AND archived_at IS NULL AND (owner_user_id = ? OR visibility = ?)',
+    'SELECT * FROM foods WHERE id = ? AND archived_at IS NULL AND (owner_user_id = ? OR (visibility = ? AND ?))',
   )
-    .bind(foodId, user.id, 'public')
+    .bind(foodId, user.id, 'public', user.show_public_foods !== 0 ? 1 : 0)
     .first<DbFood>();
   if (!food) throw new ApiError('NOT_FOUND', 'Food not found.', 404);
   return food;
@@ -712,6 +718,21 @@ async function assertUniqueFoodDescription(ctx: Ctx, user: DbUser, description: 
   if (existing) throw new ApiError('VALIDATION_ERROR', 'Food already exists in DB.');
 }
 
+// Builds the visibility predicate for a foods/meals listing. `showPublic` reflects the
+// owner's "show other users' public foods/meals" setting; when off, other users' public
+// rows are never surfaced regardless of the requested scope.
+function visibilityScope(scope: string, showPublic: boolean, userId: string): { clause: string; params: unknown[] } {
+  if (scope === 'mine') return { clause: 'owner_user_id = ?', params: [userId] };
+  if (scope === 'public') {
+    return showPublic
+      ? { clause: 'visibility = ?', params: ['public'] }
+      : { clause: 'owner_user_id = ? AND visibility = ?', params: [userId, 'public'] };
+  }
+  return showPublic
+    ? { clause: '(owner_user_id = ? OR visibility = ?)', params: [userId, 'public'] }
+    : { clause: 'owner_user_id = ?', params: [userId] };
+}
+
 async function listFoods(ctx: Ctx, user: DbUser, url: URL) {
   const search = (url.searchParams.get('search') ?? '').trim().toLowerCase();
   const terms = search.split(/\s+/).filter(Boolean).map(escapeLike);
@@ -732,16 +753,9 @@ async function listFoods(ctx: Ctx, user: DbUser, url: URL) {
     orderParams.push(`${escapeLike(search)}%`, ...terms.map((term) => `%${term}%`));
   }
 
-  if (scope === 'mine') {
-    clauses.push('owner_user_id = ?');
-    params.push(user.id);
-  } else if (scope === 'public') {
-    clauses.push('visibility = ?');
-    params.push('public');
-  } else {
-    clauses.push('(owner_user_id = ? OR visibility = ?)');
-    params.push(user.id, 'public');
-  }
+  const foodScope = visibilityScope(scope, user.show_public_foods !== 0, user.id);
+  clauses.push(foodScope.clause);
+  params.push(...foodScope.params);
   const result = await ctx.env.DB.prepare(`SELECT * FROM foods WHERE ${clauses.join(' AND ')} ORDER BY ${orderBy}`)
     .bind(...params, ...orderParams)
     .all<DbFood>();
@@ -808,9 +822,9 @@ function mapMeal(meal: DbMeal, items: unknown[] = []) {
 
 async function visibleMeal(ctx: Ctx, user: DbUser, mealId: string) {
   const meal = await ctx.env.DB.prepare(
-    'SELECT * FROM saved_meals WHERE id = ? AND archived_at IS NULL AND (owner_user_id = ? OR visibility = ?)',
+    'SELECT * FROM saved_meals WHERE id = ? AND archived_at IS NULL AND (owner_user_id = ? OR (visibility = ? AND ?))',
   )
-    .bind(mealId, user.id, 'public')
+    .bind(mealId, user.id, 'public', user.show_public_meals ? 1 : 0)
     .first<DbMeal>();
   if (!meal) throw new ApiError('NOT_FOUND', 'Saved meal not found.', 404);
   return meal;
@@ -842,16 +856,9 @@ async function listMeals(ctx: Ctx, user: DbUser, url: URL) {
   const scope = url.searchParams.get('scope') ?? 'all';
   const clauses = ['archived_at IS NULL', 'name LIKE ?'];
   const params: unknown[] = [search];
-  if (scope === 'mine') {
-    clauses.push('owner_user_id = ?');
-    params.push(user.id);
-  } else if (scope === 'public') {
-    clauses.push('visibility = ?');
-    params.push('public');
-  } else {
-    clauses.push('(owner_user_id = ? OR visibility = ?)');
-    params.push(user.id, 'public');
-  }
+  const mealScope = visibilityScope(scope, Boolean(user.show_public_meals), user.id);
+  clauses.push(mealScope.clause);
+  params.push(...mealScope.params);
   const result = await ctx.env.DB.prepare(`SELECT * FROM saved_meals WHERE ${clauses.join(' AND ')} ORDER BY name LIMIT 100`)
     .bind(...params)
     .all<DbMeal>();

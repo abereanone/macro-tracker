@@ -38,6 +38,8 @@ type User = {
   calorieGoalType: "manual" | "goal-based";
   preferredWeightUnit: "lb" | "kg";
   timezone: string;
+  showPublicFoods: boolean;
+  showPublicMeals: boolean;
 };
 type Food = {
   id: string;
@@ -244,6 +246,10 @@ const routeHelp: Partial<Record<Exclude<Route, "login">, HelpBubble[]>> = {
     {
       title: "Review the day",
       body: "Calories, protein, movement, workouts, supplements, weight, and each food entry are collected below the entry tools.",
+    },
+    {
+      title: "New: control whose foods and meals you see",
+      body: "Settings now lets you show or hide other users' public foods and meals. By default you'll see public foods but only your own meals. Adjust these on the Settings page anytime.",
     },
   ],
   foods: [
@@ -2552,6 +2558,8 @@ type SettingsForm = {
   calorieGoalType: string;
   calorieGoalValue: string;
   timezone: string;
+  showPublicFoods: boolean;
+  showPublicMeals: boolean;
 };
 
 function getSettingsForm(user: User): SettingsForm {
@@ -2564,6 +2572,8 @@ function getSettingsForm(user: User): SettingsForm {
     calorieGoalValue:
       user.calorieGoalValue == null ? "" : String(user.calorieGoalValue),
     timezone: user.timezone ?? "America/New_York",
+    showPublicFoods: user.showPublicFoods,
+    showPublicMeals: user.showPublicMeals,
   };
 }
 
@@ -2629,7 +2639,10 @@ function SettingsPage({
     };
   }, [readOnly, user, viewingUser?.id]);
 
-  const updateSettingsField = (field: keyof SettingsForm, value: string) => {
+  const updateSettingsField = (
+    field: keyof SettingsForm,
+    value: string | boolean,
+  ) => {
     setSaveMessage("");
     setSettingsForm((current) => ({ ...current, [field]: value }));
   };
@@ -2713,6 +2726,8 @@ function SettingsPage({
             calorieGoalType: settingsForm.calorieGoalType,
             preferredWeightUnit: settingsForm.preferredWeightUnit,
             timezone: settingsForm.timezone,
+            showPublicFoods: settingsForm.showPublicFoods,
+            showPublicMeals: settingsForm.showPublicMeals,
           }),
         });
         setUser(res.user);
@@ -2863,6 +2878,30 @@ function SettingsPage({
                 </option>
               ))}
             </select>
+          </label>
+          <label className="field checkbox-field">
+            <input
+              type="checkbox"
+              name="showPublicFoods"
+              checked={settingsForm.showPublicFoods}
+              disabled={readOnly}
+              onChange={(event) =>
+                updateSettingsField("showPublicFoods", event.target.checked)
+              }
+            />
+            <span>Show other users' public foods</span>
+          </label>
+          <label className="field checkbox-field">
+            <input
+              type="checkbox"
+              name="showPublicMeals"
+              checked={settingsForm.showPublicMeals}
+              disabled={readOnly}
+              onChange={(event) =>
+                updateSettingsField("showPublicMeals", event.target.checked)
+              }
+            />
+            <span>Show other users' public meals</span>
           </label>
         </Panel>
         <Panel title="Daily Goals | Customize the goals you want to track in your diary.">
