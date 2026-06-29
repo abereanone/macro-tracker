@@ -2256,9 +2256,10 @@ function Reports({ user, viewingUser }: { user: User; viewingUser?: FriendUser |
                 const absDiff = `${round(fromLb(Math.abs(lossLb), weightUnit), 1)} ${weightUnit}`;
                 const color = isGain ? "red" : "green";
                 const verb = isGain ? "Gained" : "Lost";
+                const period = twoWeekWeightLoss.useWeeklyAverages ? "1 week" : "2 weeks";
                 return (
                   <span>
-                    <strong>Weight Change (2 weeks):</strong>{" "}
+                    <strong>Weight Change ({period}):</strong>{" "}
                     <strong style={{ color }}>{verb} {absDiff}</strong>
                   </span>
                 );
