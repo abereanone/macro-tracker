@@ -369,6 +369,17 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
 small { display: block; color: #63716b; margin-top: 4px; }
 .table { display: grid; gap: 6px; }
 .table-row { grid-template-columns: 1fr repeat(4, auto); }
+.summary { display: flex; flex-direction: column; gap: 0.6em; }
+.summary-table { border-collapse: collapse; width: 100%; max-width: 460px; }
+.summary-table th, .summary-table td {
+  border: 1px solid #edf1ee;
+  padding: 8px 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.summary-table thead th { background: #f5fbf8; color: #40504a; font-size: 0.85rem; }
+.summary-table tbody th { text-align: left; font-weight: 700; color: #40504a; }
+.summary-table thead th:first-child { border: none; background: transparent; }
 .bars { display: grid; gap: 10px; }
 .bar-row { display: grid; grid-template-columns: 110px 1fr 70px; gap: 10px; align-items: center; }
 .bar-row div { height: 12px; background: #e4ebe7; border-radius: 99px; overflow: hidden; }

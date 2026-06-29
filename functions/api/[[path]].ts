@@ -1188,6 +1188,10 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
     .bind(user.id, window.start, window.end)
     .all<DbWeight>();
 
+  // Summary block shared by every branch: latest weight + per-week averages for the
+  // This Week / Previous Week table at the top of the Reports tab.
+  const summary = await weeklySummary(ctx, user, window.end);
+
   // Try weekly average method first
   const weeklyAvgs = computeWeeklyAverages(weights.results, window.end);
   if (weeklyAvgs) {
@@ -1203,6 +1207,7 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
       recentWeekStart,
       recentWeekEnd,
       weightLossLb: Math.round((priorAvgLb - recentAvgLb + Number.EPSILON) * 100) / 100,
+      ...summary,
     });
   }
 
@@ -1213,6 +1218,7 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
       ok: true,
       canCalculate: false,
       message: "Add a weight entry in the past 7 days and the prior 7 days to calculate weight change.",
+      ...summary,
     });
   }
 
@@ -1223,6 +1229,7 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
       canCalculate: false,
       endWeight: mapWeightPoint(todayWeight),
       message: 'Add an earlier weight entry from the last two weeks to calculate weight loss.',
+      ...summary,
     });
   }
 
@@ -1235,7 +1242,60 @@ async function reportTwoWeekWeightLoss(ctx: Ctx, user: DbUser) {
     startWeight: start,
     endWeight: end,
     weightLossLb: Math.round((start.valueLb - end.valueLb + Number.EPSILON) * 100) / 100,
+    ...summary,
   });
+}
+
+// Builds the data for the summary table at the top of the Reports tab: the most recent
+// weight overall plus average weight and average logged calorie intake for the current
+// 7-day window and the prior 7-day window. Week boundaries match computeWeeklyAverages.
+async function weeklySummary(ctx: Ctx, user: DbUser, windowEnd: string) {
+  const recentWeekStart = addDays(windowEnd, -6);
+  const priorWeekEnd = addDays(windowEnd, -7);
+  const priorWeekStart = addDays(windowEnd, -13);
+
+  const latest = await ctx.env.DB.prepare(
+    'SELECT entry_date, weight_value, weight_unit FROM weight_entries WHERE user_id = ? ORDER BY entry_date DESC LIMIT 1',
+  )
+    .bind(user.id)
+    .first<DbWeight>();
+
+  const [thisWeek, priorWeek] = await Promise.all([
+    weekAverages(ctx, user, recentWeekStart, windowEnd),
+    weekAverages(ctx, user, priorWeekStart, priorWeekEnd),
+  ]);
+
+  return {
+    latestWeight: latest ? mapWeightPoint(latest) : null,
+    weeks: {
+      thisWeek: { start: recentWeekStart, end: windowEnd, ...thisWeek },
+      priorWeek: { start: priorWeekStart, end: priorWeekEnd, ...priorWeek },
+    },
+  };
+}
+
+async function weekAverages(ctx: Ctx, user: DbUser, weekStart: string, weekEnd: string) {
+  const weights = await ctx.env.DB.prepare('SELECT weight_value, weight_unit FROM weight_entries WHERE user_id = ? AND entry_date BETWEEN ? AND ?')
+    .bind(user.id, weekStart, weekEnd)
+    .all<DbWeight>();
+  const avgWeightLb = weights.results.length
+    ? Math.round((weights.results.reduce((sum, w) => sum + toLb(w.weight_value, w.weight_unit), 0) / weights.results.length) * 10) / 10
+    : null;
+
+  const cal = await ctx.env.DB.prepare(
+    `SELECT AVG(dayCalories) AS avgCalories, COUNT(*) AS loggedDays FROM (
+       SELECT SUM(calories) AS dayCalories FROM diary_items
+       WHERE user_id = ? AND eaten_date BETWEEN ? AND ? GROUP BY eaten_date
+     )`,
+  )
+    .bind(user.id, weekStart, weekEnd)
+    .first<{ avgCalories: number | null; loggedDays: number }>();
+
+  return {
+    avgWeightLb,
+    avgCalories: cal?.avgCalories != null ? Math.round(Number(cal.avgCalories)) : null,
+    loggedDays: Number(cal?.loggedDays ?? 0),
+  };
 }
 
 function mapWeightPoint(weight: DbWeight) {

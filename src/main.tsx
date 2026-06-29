@@ -2236,48 +2236,58 @@ function Reports({ user, viewingUser }: { user: User; viewingUser?: FriendUser |
   return (
     <section>
       <Header title={viewingUser ? `${viewingUser.name}'s Reports` : "Reports"} icon={<BarChart3 />} />
-      <Panel title="Weight Change Over Last Two Weeks">
+      <Panel title="Summary">
         {twoWeekWeightLoss?.error ? (
           <p>{twoWeekWeightLoss.error}</p>
-        ) : twoWeekWeightLoss?.canCalculate === false ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.4em" }}>
-            <span>{twoWeekWeightLoss.message}</span>
-            {twoWeekWeightLoss.sevenDayAvgLb != null && (
-              <span><strong>Avg this week:</strong> {fmtLb(twoWeekWeightLoss.sevenDayAvgLb)}</span>
-            )}
-          </div>
         ) : twoWeekWeightLoss ? (
-          (() => {
-            const lossLb = twoWeekWeightLoss.weightLossLb;
-            const isGain = lossLb < 0;
-            const absDiff = `${round(fromLb(Math.abs(lossLb), weightUnit), 1)} ${weightUnit}`;
-            const color = isGain ? "red" : "green";
-            const verb = isGain ? "Gained" : "Lost";
-            if (twoWeekWeightLoss.useWeeklyAverages) {
-              const { priorAvgLb, recentAvgLb, priorWeekStart, priorWeekEnd, recentWeekStart, recentWeekEnd } = twoWeekWeightLoss;
-              return (
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.4em" }}>
-                  <span><strong>This week avg:</strong> {fmtLb(recentAvgLb)} ({recentWeekStart}–{recentWeekEnd})</span>
-                  <span><strong>Prior week avg:</strong> {fmtLb(priorAvgLb)} ({priorWeekStart}–{priorWeekEnd})</span>
+          <div className="summary">
+            {twoWeekWeightLoss.latestWeight && (
+              <span>
+                <strong>Latest Weight:</strong>{" "}
+                {fmtLb(twoWeekWeightLoss.latestWeight.valueLb)} ({twoWeekWeightLoss.latestWeight.date})
+              </span>
+            )}
+            {twoWeekWeightLoss.canCalculate === false ? (
+              <span>{twoWeekWeightLoss.message}</span>
+            ) : (
+              (() => {
+                const lossLb = twoWeekWeightLoss.weightLossLb;
+                const isGain = lossLb < 0;
+                const absDiff = `${round(fromLb(Math.abs(lossLb), weightUnit), 1)} ${weightUnit}`;
+                const color = isGain ? "red" : "green";
+                const verb = isGain ? "Gained" : "Lost";
+                return (
                   <span>
-                    <strong>Change:</strong>{" "}
+                    <strong>Weight Change (2 weeks):</strong>{" "}
                     <strong style={{ color }}>{verb} {absDiff}</strong>
                   </span>
-                </div>
-              );
-            }
-            const { endWeight, startWeight } = twoWeekWeightLoss;
-            return (
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.4em" }}>
-                <span><strong>Weight:</strong> {endWeight.value} {endWeight.unit}</span>
-                <span>
-                  <strong>Change:</strong>{" "}
-                  <strong style={{ color }}>{verb} {absDiff}</strong>{" "}
-                  since {startWeight.date}
-                </span>
-              </div>
-            );
-          })()
+                );
+              })()
+            )}
+            {twoWeekWeightLoss.weeks && (
+              <table className="summary-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>This Week</th>
+                    <th>Previous Week</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <th>Average Weight</th>
+                    <td>{twoWeekWeightLoss.weeks.thisWeek.avgWeightLb != null ? fmtLb(twoWeekWeightLoss.weeks.thisWeek.avgWeightLb) : "—"}</td>
+                    <td>{twoWeekWeightLoss.weeks.priorWeek.avgWeightLb != null ? fmtLb(twoWeekWeightLoss.weeks.priorWeek.avgWeightLb) : "—"}</td>
+                  </tr>
+                  <tr>
+                    <th>Average Calorie Intake</th>
+                    <td>{twoWeekWeightLoss.weeks.thisWeek.avgCalories != null ? `${twoWeekWeightLoss.weeks.thisWeek.avgCalories} cal` : "—"}</td>
+                    <td>{twoWeekWeightLoss.weeks.priorWeek.avgCalories != null ? `${twoWeekWeightLoss.weeks.priorWeek.avgCalories} cal` : "—"}</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+          </div>
         ) : null}
       </Panel>
       <Panel title="Weight by Day">
