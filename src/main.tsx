@@ -8,6 +8,7 @@ import {
   convertConsumedQuantityToServingQuantity,
   fromLb,
   round,
+  toLb,
 } from "./shared/calculations";
 import {
   Activity,
@@ -734,6 +735,16 @@ function Login({
   );
 }
 
+function weightInPreferredUnit(
+  weight: { weight_value: number; weight_unit: "lb" | "kg" } | null | undefined,
+  preferredUnit: "lb" | "kg",
+) {
+  if (!weight) return "";
+  return String(
+    round(fromLb(toLb(weight.weight_value, weight.weight_unit), preferredUnit), 1),
+  );
+}
+
 function ownerQuery(viewingUser?: FriendUser | null) {
   return viewingUser ? `ownerUserId=${encodeURIComponent(viewingUser.id)}` : "";
 }
@@ -767,8 +778,8 @@ function Dashboard({
   const [popupMessage, setPopupMessage] = useState("");
   const [status, setStatus] = useState("");
   const [weightValue, setWeightValue] = useState("");
-  const [weightUnit, setWeightUnit] = useState(user.preferredWeightUnit);
   const [savingWeight, setSavingWeight] = useState(false);
+  const weightUnit = user.preferredWeightUnit;
   const readOnly = Boolean(viewingUser);
   const load = () => {
     api(withOwner(`/days/${date}`, viewingUser)).then(setDay);
@@ -785,8 +796,7 @@ function Dashboard({
   };
   useEffect(load, [date, viewingUser?.id]);
   useEffect(() => {
-    setWeightValue(day?.weight ? String(day.weight.weight_value) : "");
-    setWeightUnit(day?.weight?.weight_unit ?? user.preferredWeightUnit);
+    setWeightValue(weightInPreferredUnit(day?.weight, user.preferredWeightUnit));
   }, [day?.weight, user.preferredWeightUnit]);
   useEffect(() => {
     if (!popupMessage) return;
@@ -844,10 +854,11 @@ function Dashboard({
           : "Add a current weight to calculate the weekly pace needed.",
       ].join("\n")
     : undefined;
-  const savedWeightValue = day?.weight ? String(day.weight.weight_value) : "";
-  const savedWeightUnit = day?.weight?.weight_unit ?? user.preferredWeightUnit;
-  const weightChanged =
-    weightValue !== savedWeightValue || weightUnit !== savedWeightUnit;
+  const savedWeightValue = weightInPreferredUnit(
+    day?.weight,
+    user.preferredWeightUnit,
+  );
+  const weightChanged = weightValue !== savedWeightValue;
   const canAddFood = Boolean(
     selectedFood && Number(foodQuantity) > 0 && !addingFood,
   );
@@ -880,6 +891,15 @@ function Dashboard({
           onChange={(event) => setDate(event.target.value)}
         />
         <button onClick={() => setDate(today())}>Today</button>
+        {calorieGoalDelta != null && (
+          <div
+            className={`toolbar-cals ${calorieGoalDelta >= 0 ? "remaining" : "over"}`}
+            title={calorieGoalStatus?.text}
+          >
+            <span>{calorieGoalDelta >= 0 ? "Cals Remaining" : "Cals Over"}</span>
+            <strong>{Math.abs(calorieGoalDelta)}</strong>
+          </div>
+        )}
       </div>
       {!readOnly && (
       <div className="two-col">
@@ -997,7 +1017,7 @@ function Dashboard({
                     body: JSON.stringify({ eatenDate: date, mealLabel }),
                   });
                   setPopupMessage(
-                    `${meal.name} added for ${date} and ${mealLabel}`,
+                    `${meal.name} added to ${mealLabel} - ${savedMealCalories(meal)} cal`,
                   );
                   load();
                 }}
@@ -1012,22 +1032,6 @@ function Dashboard({
       )}
       {totals && (
         <div className="metric-grid today-metrics">
-          <MacroMetric
-            label="Protein"
-            grams={totals.proteinG}
-            percent={totals.proteinPercent}
-            goalStatus={proteinGoalStatus}
-          />
-          <MacroMetric
-            label="Fat"
-            grams={totals.fatG}
-            percent={totals.fatPercent}
-          />
-          <MacroMetric
-            label="Carbs"
-            grams={totals.carbohydrateG}
-            percent={totals.carbohydratePercent}
-          />
           <div className="metric calorie-metric">
             <span>Calories</span>
             <strong>{Math.round(totals.calories)}</strong>
@@ -1044,13 +1048,29 @@ function Dashboard({
               </small>
             )}
           </div>
+          <MacroMetric
+            label="Protein"
+            grams={totals.proteinG}
+            percent={totals.proteinPercent}
+            goalStatus={proteinGoalStatus}
+          />
+          <MacroMetric
+            label="Fat"
+            grams={totals.fatG}
+            percent={totals.fatPercent}
+          />
+          <MacroMetric
+            label="Carbs"
+            grams={totals.carbohydrateG}
+            percent={totals.carbohydratePercent}
+          />
         </div>
       )}
       <Panel title={`Diary for ${date}`}>
         <div className="list">
           <div className="list-row diary-weight">
             <span>
-              <strong>Weight</strong>
+              <strong>Weight in {user.preferredWeightUnit}</strong>
               <small>
                 {day?.weight
                   ? `${day.weight.weight_value} ${day.weight.weight_unit}`
@@ -1084,21 +1104,16 @@ function Dashboard({
                 name="weightValue"
                 type="number"
                 step="0.1"
-                placeholder="Weight"
+                placeholder={`Weight in ${user.preferredWeightUnit}`}
                 value={weightValue}
                 onChange={(event) => setWeightValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }}
                 required
               />
-              <select
-                name="weightUnit"
-                value={weightUnit}
-                onChange={(event) =>
-                  setWeightUnit(event.target.value as "lb" | "kg")
-                }
-              >
-                <option>lb</option>
-                <option>kg</option>
-              </select>
               <button disabled={!canSaveWeight}>
                 <Scale size={16} /> {savingWeight ? "Saving..." : "Save"}
               </button>
