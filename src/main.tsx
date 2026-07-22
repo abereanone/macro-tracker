@@ -215,6 +215,21 @@ function mealItemCalories(item: MealItem) {
   return mealItemNutrition(item).calories;
 }
 
+function loggedFoodCalories(food: Food, quantity: number, quantityUnit: string) {
+  const nutrition = foodNutrition(food);
+  if (!nutrition) return null;
+  try {
+    const servingQuantity = convertConsumedQuantityToServingQuantity(
+      nutrition,
+      quantity,
+      quantityUnit,
+    );
+    return Math.round(calculateLoggedNutrition(nutrition, servingQuantity).calories);
+  } catch {
+    return null;
+  }
+}
+
 function savedMealTotals(meal: SavedMeal) {
   return calculateTotals(meal.items.map(mealItemNutrition));
 }
@@ -462,7 +477,7 @@ function App() {
     <div className="shell">
       <header className="mobile-topbar">
         <div className="brand">
-          <Activity size={20} /> Macro Tracker
+          <Activity size={22} /> CalPal
         </div>
         <button
           className="ghost icon-button"
@@ -474,7 +489,7 @@ function App() {
       </header>
       <aside className={mobileMenuOpen ? "nav open" : "nav"}>
         <div className="brand">
-          <Activity size={22} /> Macro Tracker
+          <Activity size={24} /> CalPal
         </div>
         <button
           className={route === "app" ? "active" : ""}
@@ -920,8 +935,15 @@ function Dashboard({
                     quantityUnit: foodQuantityUnit,
                   }),
                 });
+                const addedCalories = loggedFoodCalories(
+                  selectedFood,
+                  Number(foodQuantity),
+                  foodQuantityUnit,
+                );
                 setPopupMessage(
-                  `${selectedFood.description} added for ${date} and ${mealLabel}`,
+                  `${selectedFood.description} added for ${date} and ${mealLabel}${
+                    addedCalories != null ? ` - ${addedCalories} cal` : ""
+                  }`,
                 );
                 setSelectedFood(null);
                 setFoodSearch("");

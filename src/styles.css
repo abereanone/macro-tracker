@@ -65,7 +65,7 @@ form { display: grid; gap: 10px; }
 }
 .nav button { justify-content: flex-start; background: transparent; color: #dce9e4; }
 .nav button.active, .nav button:hover { background: #2d705b; color: white; }
-.brand { display: flex; gap: 10px; align-items: center; font-weight: 800; margin-bottom: 12px; }
+.brand { display: flex; gap: 10px; align-items: center; font-weight: 800; font-size: 21px; letter-spacing: -0.01em; margin-bottom: 12px; }
 .signed-in { font-size: 12px; color: #b7ccc3; margin-top: auto; overflow-wrap: anywhere; }
 main { padding: 28px; max-width: 1180px; width: 100%; }
 .login-page { min-height: 100vh; display: grid; place-items: center; background: linear-gradient(135deg, #eef5ef, #f7f1e8); max-width: none; }
