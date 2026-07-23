@@ -303,6 +303,16 @@ async function requestLoginCode(ctx: Ctx) {
     to: email,
     subject: 'Your Macro Tracker login code',
     text: `Your Macro Tracker login code is ${code}. It expires in 10 minutes.`,
+    html: `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /></head>
+<body style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#1d2623;">
+  <h2 style="color:#22614d;margin-bottom:8px;">Macro Tracker Login</h2>
+  <p style="margin-bottom:24px;">Your login code is:</p>
+  <div style="font-size:52px;font-weight:900;letter-spacing:12px;text-align:center;background:#eef3f0;border:2px solid #22614d;border-radius:10px;padding:20px 0;color:#22614d;">${code}</div>
+  <p style="margin-top:24px;color:#5e6b66;font-size:0.9em;">Expires in 10 minutes. If you didn't request this, ignore it.</p>
+</body>
+</html>`,
   });
 
   return json({ ok: true });
