@@ -19,6 +19,7 @@ import {
   LogOut,
   Mail,
   Menu,
+  Pin,
   Plus,
   Scale,
   Settings,
@@ -75,6 +76,7 @@ type SavedMeal = {
   name: string;
   description?: string;
   visibility: "private" | "public";
+  pinned: boolean;
   items: MealItem[];
 };
 type MacroSummary = {
@@ -236,6 +238,50 @@ function savedMealTotals(meal: SavedMeal) {
 
 function savedMealCalories(meal: SavedMeal) {
   return Math.round(savedMealTotals(meal).calories);
+}
+
+type DiaryRow =
+  | { kind: "item"; key: string; item: any }
+  | { kind: "group"; key: string; name: string; label: string; items: any[] };
+
+// Diary items logged together from a saved meal share a meal_group_id, so they
+// render as one meal card instead of loose foods. Items logged before grouping
+// existed have no group id and stay individual rows.
+function groupDiaryItems(items: any[] = []): DiaryRow[] {
+  const rows: DiaryRow[] = [];
+  const groups = new Map<string, Extract<DiaryRow, { kind: "group" }>>();
+  for (const item of items) {
+    const groupId = item.meal_group_id;
+    if (!groupId) {
+      rows.push({ kind: "item", key: item.id, item });
+      continue;
+    }
+    let group = groups.get(groupId);
+    if (!group) {
+      group = {
+        kind: "group",
+        key: groupId,
+        name: item.savedMealName ?? "Saved meal",
+        label: item.meal_label ?? "Other",
+        items: [],
+      };
+      groups.set(groupId, group);
+      rows.push(group);
+    }
+    group.items.push(item);
+  }
+  return rows;
+}
+
+function diaryItemTotals(items: any[]) {
+  return calculateTotals(
+    items.map((item) => ({
+      proteinG: Number(item.protein_g),
+      fatG: Number(item.fat_g),
+      carbohydrateG: Number(item.carbohydrate_g),
+      calories: Number(item.calories),
+    })),
+  );
 }
 
 const timezones = [
@@ -785,7 +831,9 @@ function Dashboard({
   const [meals, setMeals] = useState<SavedMeal[]>([]);
   const [mealLabel, setMealLabel] = useState("Other");
   const [foodSearch, setFoodSearch] = useState("");
+  const [mealResults, setMealResults] = useState<SavedMeal[]>([]);
   const [selectedFood, setSelectedFood] = useState<Food | null>(null);
+  const [selectedMeal, setSelectedMeal] = useState<SavedMeal | null>(null);
   const [foodQuantity, setFoodQuantity] = useState("");
   const [foodQuantityUnit, setFoodQuantityUnit] = useState("g");
   const [addingFood, setAddingFood] = useState(false);
@@ -801,8 +849,8 @@ function Dashboard({
     if (readOnly) {
       setMeals([]);
     } else {
-      api<{ meals: SavedMeal[] }>("/saved-meals?scope=all").then((res) =>
-        setMeals(res.meals),
+      api<{ meals: SavedMeal[] }>("/saved-meals?scope=all&pinned=true").then(
+        (res) => setMeals(res.meals),
       );
     }
     api(withOwner("/goal-plans/active", viewingUser))
@@ -810,6 +858,25 @@ function Dashboard({
       .catch(() => setActiveGoal(null));
   };
   useEffect(load, [date, viewingUser?.id]);
+  const resetFoodSearch = () => {
+    setSelectedFood(null);
+    setSelectedMeal(null);
+    setFoodSearch("");
+    setFoods([]);
+    setMealResults([]);
+    setFoodQuantity("");
+    setFoodQuantityUnit("g");
+  };
+  const addSavedMeal = async (meal: SavedMeal) => {
+    await api(`/saved-meals/${meal.id}/add-to-diary`, {
+      method: "POST",
+      body: JSON.stringify({ eatenDate: date, mealLabel }),
+    });
+    setPopupMessage(
+      `${meal.name} added to ${mealLabel} - ${savedMealCalories(meal)} cal`,
+    );
+    load();
+  };
   useEffect(() => {
     setWeightValue(weightInPreferredUnit(day?.weight, user.preferredWeightUnit));
   }, [day?.weight, user.preferredWeightUnit]);
@@ -820,8 +887,15 @@ function Dashboard({
   }, [popupMessage]);
   useEffect(() => {
     const query = foodSearch.trim();
-    if (!query || selectedFood?.description === foodSearch) {
+    // Every saved meal is searchable here, pinned or not — pinning only controls
+    // the quick-tap tiles.
+    if (
+      !query ||
+      selectedFood?.description === foodSearch ||
+      selectedMeal?.name === foodSearch
+    ) {
       setFoods([]);
+      setMealResults([]);
       return;
     }
     let ignore = false;
@@ -830,10 +904,15 @@ function Dashboard({
     ).then((res) => {
       if (!ignore) setFoods(res.foods);
     });
+    api<{ meals: SavedMeal[] }>(
+      `/saved-meals?scope=all&search=${encodeURIComponent(query)}`,
+    ).then((res) => {
+      if (!ignore) setMealResults(res.meals);
+    });
     return () => {
       ignore = true;
     };
-  }, [foodSearch, selectedFood]);
+  }, [foodSearch, selectedFood, selectedMeal]);
 
   const totals = day?.totals;
   const calorieGoal =
@@ -877,6 +956,7 @@ function Dashboard({
   const canAddFood = Boolean(
     selectedFood && Number(foodQuantity) > 0 && !addingFood,
   );
+  const canAddMeal = Boolean(selectedMeal && !addingFood);
   const canSaveWeight = Number(weightValue) > 0 && weightChanged && !savingWeight;
   const quantityUnitOptions = ["g", "oz", "lb", "kg"];
   if (selectedFood && !quantityUnitOptions.includes(selectedFood.servingUnit))
@@ -922,6 +1002,17 @@ function Dashboard({
           <form
             onSubmit={async (event) => {
               event.preventDefault();
+              if (selectedMeal) {
+                if (!canAddMeal) return;
+                setAddingFood(true);
+                try {
+                  await addSavedMeal(selectedMeal);
+                  resetFoodSearch();
+                } finally {
+                  setAddingFood(false);
+                }
+                return;
+              }
               if (!selectedFood || !canAddFood) return;
               setAddingFood(true);
               try {
@@ -945,11 +1036,7 @@ function Dashboard({
                     addedCalories != null ? ` - ${addedCalories} cal` : ""
                   }`,
                 );
-                setSelectedFood(null);
-                setFoodSearch("");
-                setFoods([]);
-                setFoodQuantity("");
-                setFoodQuantityUnit("g");
+                resetFoodSearch();
                 load();
               } finally {
                 setAddingFood(false);
@@ -959,16 +1046,45 @@ function Dashboard({
             <div className="food-search">
               <input
                 name="foodSearch"
-                placeholder="Search food"
+                placeholder="Search food or saved meal"
                 value={foodSearch}
                 onChange={(event) => {
                   setFoodSearch(event.target.value);
                   setSelectedFood(null);
+                  setSelectedMeal(null);
                 }}
                 autoComplete="off"
               />
-              {foods.length > 0 && (
+              {(mealResults.length > 0 || foods.length > 0) && (
                 <div className="food-results">
+                  {mealResults.length > 0 && (
+                    <small className="results-divider">Saved meals</small>
+                  )}
+                  {mealResults.map((meal) => (
+                    <button
+                      key={meal.id}
+                      type="button"
+                      className="ghost meal-result"
+                      onClick={() => {
+                        setSelectedMeal(meal);
+                        setSelectedFood(null);
+                        setFoodSearch(meal.name);
+                        setFoods([]);
+                        setMealResults([]);
+                      }}
+                    >
+                      <span>
+                        <ChefHat size={14} /> {meal.name}
+                      </span>
+                      <small>
+                        {meal.items.length} items -{" "}
+                        {formatFoodMacros(savedMealTotals(meal))}
+                      </small>
+                    </button>
+                  ))}
+                  {mealResults.length > 0 && foods.length > 0 && (
+                    <small className="results-divider">Foods</small>
+                  )}
                   {foods.map((food) => (
                     <button
                       key={food.id}
@@ -976,9 +1092,11 @@ function Dashboard({
                       className="ghost"
                       onClick={() => {
                         setSelectedFood(food);
+                        setSelectedMeal(null);
                         setFoodSearch(food.description);
                         setFoodQuantityUnit(food.servingUnit);
                         setFoods([]);
+                        setMealResults([]);
                       }}
                     >
                       <span>{food.description}</span>
@@ -992,38 +1110,56 @@ function Dashboard({
                   Selected: <strong>{selectedFood.description}</strong>
                 </div>
               )}
+              {selectedMeal && (
+                <div className="selected-food">
+                  Selected meal: <strong>{selectedMeal.name}</strong> -{" "}
+                  {savedMealCalories(selectedMeal)}cal
+                </div>
+              )}
             </div>
-            <div className="row">
-              <input
-                name="quantity"
-                type="number"
-                step="0.01"
-                placeholder="Qty"
-                value={foodQuantity}
-                onChange={(event) => setFoodQuantity(event.target.value)}
-                required
-              />
-              <select
-                name="quantityUnit"
-                value={foodQuantityUnit}
-                onChange={(event) => setFoodQuantityUnit(event.target.value)}
-                aria-label="Quantity unit"
-              >
-                {quantityUnitOptions.map((unit) => (
-                  <option key={unit} value={unit}>
-                    {unit}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {!selectedMeal && (
+              <div className="row">
+                <input
+                  name="quantity"
+                  type="number"
+                  step="0.01"
+                  placeholder="Qty"
+                  value={foodQuantity}
+                  onChange={(event) => setFoodQuantity(event.target.value)}
+                  required
+                />
+                <select
+                  name="quantityUnit"
+                  value={foodQuantityUnit}
+                  onChange={(event) => setFoodQuantityUnit(event.target.value)}
+                  aria-label="Quantity unit"
+                >
+                  {quantityUnitOptions.map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             {selectedFood && (
               <small>
                 Food serving: {formatFoodSummary(selectedFood)}
               </small>
             )}
+            {selectedMeal && (
+              <small>
+                Logs all {selectedMeal.items.length} foods in this meal.
+              </small>
+            )}
             <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
-            <button disabled={!canAddFood}>
-              <Plus size={16} /> {addingFood ? "Adding..." : "Add food"}
+            <button disabled={selectedMeal ? !canAddMeal : !canAddFood}>
+              <Plus size={16} />{" "}
+              {addingFood
+                ? "Adding..."
+                : selectedMeal
+                  ? "Add meal"
+                  : "Add food"}
             </button>
           </form>
         </Panel>
@@ -1031,24 +1167,18 @@ function Dashboard({
           <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
           <div className="list compact">
             {meals.map((meal) => (
-              <button
-                key={meal.id}
-                onClick={async () => {
-                  await api(`/saved-meals/${meal.id}/add-to-diary`, {
-                    method: "POST",
-                    body: JSON.stringify({ eatenDate: date, mealLabel }),
-                  });
-                  setPopupMessage(
-                    `${meal.name} added to ${mealLabel} - ${savedMealCalories(meal)} cal`,
-                  );
-                  load();
-                }}
-              >
+              <button key={meal.id} onClick={() => addSavedMeal(meal)}>
                 <span>{meal.name}</span>
                 <small>{savedMealCalories(meal)}cal</small>
               </button>
             ))}
           </div>
+          {meals.length === 0 && (
+            <small>
+              No pinned meals. Pin a meal on the Saved Meals page for one-tap
+              logging, or search for any meal above.
+            </small>
+          )}
         </Panel>
       </div>
       )}
@@ -1172,31 +1302,86 @@ function Dashboard({
               </div>
             </div>
           )}
-          {day?.items?.map((item: any) => (
-            <div className="list-row" key={item.id}>
-              <span>
-                <strong>{item.foodDescription}</strong>
-                <small>
-                  {item.meal_label ?? "Other"} · {item.quantity}
-                  {item.quantity_unit}
-                </small>
-              </span>
-              <span>
-                {Math.round(item.calories)}cal · {Math.round(item.protein_g)}P {Math.round(item.fat_g)}F {Math.round(item.carbohydrate_g)}C
-              </span>
-              {!readOnly && (
-                <button
-                  className="ghost"
-                  onClick={async () => {
-                    await api(`/diary-items/${item.id}`, { method: "DELETE" });
-                    load();
-                  }}
-                >
-                  Delete
-                </button>
-              )}
-            </div>
-          ))}
+          {groupDiaryItems(day?.items).map((row) => {
+            if (row.kind === "item") {
+              const item = row.item;
+              return (
+                <div className="list-row" key={row.key}>
+                  <span>
+                    <strong>{item.foodDescription}</strong>
+                    <small>
+                      {item.meal_label ?? "Other"} · {item.quantity}
+                      {item.quantity_unit}
+                    </small>
+                  </span>
+                  <span>
+                    {Math.round(item.calories)}cal · {Math.round(item.protein_g)}P {Math.round(item.fat_g)}F {Math.round(item.carbohydrate_g)}C
+                  </span>
+                  {!readOnly && (
+                    <button
+                      className="ghost"
+                      onClick={async () => {
+                        await api(`/diary-items/${item.id}`, { method: "DELETE" });
+                        load();
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              );
+            }
+            const groupTotals = diaryItemTotals(row.items);
+            return (
+              <div className="list-row diary-meal-group" key={row.key}>
+                <span>
+                  <strong>
+                    <ChefHat size={14} /> {row.name}
+                  </strong>
+                  <small>
+                    {row.label} · saved meal · {row.items.length} items
+                  </small>
+                  <div className="diary-meal-items">
+                    {row.items.map((item: any) => (
+                      <div className="diary-meal-item" key={item.id}>
+                        <small>
+                          {item.foodDescription} · {item.quantity}
+                          {item.quantity_unit} · {Math.round(item.calories)}cal
+                        </small>
+                        {!readOnly && (
+                          <button
+                            className="ghost"
+                            onClick={async () => {
+                              await api(`/diary-items/${item.id}`, {
+                                method: "DELETE",
+                              });
+                              load();
+                            }}
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </span>
+                <span>
+                  {Math.round(groupTotals.calories)}cal · {Math.round(groupTotals.proteinG)}P {Math.round(groupTotals.fatG)}F {Math.round(groupTotals.carbohydrateG)}C
+                </span>
+                {!readOnly && (
+                  <button
+                    className="ghost"
+                    onClick={async () => {
+                      await api(`/diary-groups/${row.key}`, { method: "DELETE" });
+                      load();
+                    }}
+                  >
+                    Delete meal
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       </Panel>
       {status && <p>{status}</p>}
@@ -1717,6 +1902,7 @@ function SavedMeals({
                 <strong>{meal.name}</strong>
                 <small>
                   {meal.visibility} - {meal.items.length} items - {formatFoodMacros(savedMealTotals(meal))}
+                  {meal.pinned ? " - pinned to diary" : ""}
                 </small>
                 {meal.items.length > 0 && (
                   <div className="meal-food-list">
@@ -1749,6 +1935,30 @@ function SavedMeals({
                     }
                   >
                     Copy
+                  </button>
+                )}
+                {meal.ownerUserId === user.id && (
+                  <button
+                    className="ghost"
+                    onClick={async () => {
+                      await api(`/saved-meals/${meal.id}`, {
+                        method: "PUT",
+                        body: JSON.stringify({
+                          name: meal.name,
+                          description: meal.description ?? "",
+                          visibility: meal.visibility,
+                          pinned: !meal.pinned,
+                          items: meal.items.map((item) => ({
+                            foodId: item.foodId,
+                            quantity: item.quantity,
+                            quantityUnit: item.quantityUnit,
+                          })),
+                        }),
+                      });
+                      load();
+                    }}
+                  >
+                    <Pin size={16} /> {meal.pinned ? "Unpin" : "Pin"}
                   </button>
                 )}
                 {meal.ownerUserId === user.id && (
@@ -1789,6 +1999,7 @@ function MealForm({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState<"private" | "public">("private");
+  const [pinned, setPinned] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -1796,6 +2007,7 @@ function MealForm({
       setName(meal.name);
       setDescription(meal.description ?? "");
       setVisibility(meal.visibility);
+      setPinned(Boolean(meal.pinned));
       setItems(
         meal.items.length
           ? meal.items
@@ -1805,6 +2017,7 @@ function MealForm({
       setName("");
       setDescription("");
       setVisibility("private");
+      setPinned(false);
       setItems([{ foodId: "", quantity: 1, quantityUnit: "g" }]);
     }
   }, [meal]);
@@ -1831,6 +2044,7 @@ function MealForm({
               name,
               description,
               visibility,
+              pinned,
               items: items
                 .filter((item) => item.foodId)
                 .map((item) => ({
@@ -1844,6 +2058,7 @@ function MealForm({
             setName("");
             setDescription("");
             setVisibility("private");
+            setPinned(false);
             setItems([{ foodId: "", quantity: 1, quantityUnit: "g" }]);
           }
           await onSave();
@@ -1939,6 +2154,20 @@ function MealForm({
         <option value="private">Private</option>
         <option value="public">Public</option>
       </select>
+      <label className="pin-toggle">
+        <input
+          type="checkbox"
+          checked={pinned}
+          onChange={(event) => setPinned(event.target.checked)}
+        />
+        <span>
+          Pin to Daily Diary
+          <small>
+            Pinned meals get a quick-tap tile. Unpinned meals stay findable in
+            the diary search box.
+          </small>
+        </span>
+      </label>
       <div className="form-actions">
         <button>
           <Plus size={16} /> {meal ? "Update meal" : "Create meal"}

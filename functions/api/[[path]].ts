@@ -42,7 +42,7 @@ type DbFood = {
   visibility: string;
   notes: string | null;
 };
-type DbMeal = { id: string; owner_user_id: string; name: string; description: string | null; visibility: string };
+type DbMeal = { id: string; owner_user_id: string; name: string; description: string | null; visibility: string; pinned: number };
 type DbWeight = { id: string; entry_date: string; weight_value: number; weight_unit: 'lb' | 'kg'; notes: string | null };
 type DbMaintenanceSnapshot = {
   id: string;
@@ -127,6 +127,7 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     if (path === '/diary-items' && method === 'POST') return createDiaryItem(ctx, user);
     if (segments[0] === 'diary-items' && segments[1] && method === 'PUT') return updateDiaryItem(ctx, user, segments[1]);
     if (segments[0] === 'diary-items' && segments[1] && method === 'DELETE') return deleteDiaryItem(ctx, user, segments[1]);
+    if (segments[0] === 'diary-groups' && segments[1] && method === 'DELETE') return deleteDiaryGroup(ctx, user, segments[1]);
 
     if (path === '/weight' && method === 'GET') return listWeight(ctx, await readableUser(ctx, user, url), url);
     if (path === '/weight' && method === 'POST') return upsertWeight(ctx, user);
@@ -827,7 +828,7 @@ async function copyFood(ctx: Ctx, user: DbUser, foodId: string) {
 }
 
 function mapMeal(meal: DbMeal, items: unknown[] = []) {
-  return { id: meal.id, ownerUserId: meal.owner_user_id, name: meal.name, description: meal.description, visibility: meal.visibility, items };
+  return { id: meal.id, ownerUserId: meal.owner_user_id, name: meal.name, description: meal.description, visibility: meal.visibility, pinned: meal.pinned !== 0, items };
 }
 
 async function visibleMeal(ctx: Ctx, user: DbUser, mealId: string) {
@@ -862,15 +863,33 @@ async function mealItems(ctx: Ctx, mealId: string) {
 }
 
 async function listMeals(ctx: Ctx, user: DbUser, url: URL) {
-  const search = `%${(url.searchParams.get('search') ?? '').trim()}%`;
+  // Mirrors listFoods: split the query into terms, match any of them, and rank
+  // prefix matches first so the diary search box behaves the same for both.
+  const search = (url.searchParams.get('search') ?? '').trim().toLowerCase();
+  const terms = search.split(/\s+/).filter(Boolean).map(escapeLike);
   const scope = url.searchParams.get('scope') ?? 'all';
-  const clauses = ['archived_at IS NULL', 'name LIKE ?'];
-  const params: unknown[] = [search];
+  const clauses = ['archived_at IS NULL'];
+  const params: unknown[] = [];
+  let orderBy = 'name';
+  const orderParams: unknown[] = [];
+
+  if (terms.length) {
+    clauses.push(`(${terms.map(() => "lower(name) LIKE ? ESCAPE '\\'").join(' OR ')})`);
+    params.push(...terms.map((term) => `%${term}%`));
+    orderBy = `CASE
+      WHEN lower(name) LIKE ? ESCAPE '\\' THEN 0
+      WHEN ${terms.map(() => "lower(name) LIKE ? ESCAPE '\\'").join(' AND ')} THEN 1
+      ELSE 2
+    END, name`;
+    orderParams.push(`${escapeLike(search)}%`, ...terms.map((term) => `%${term}%`));
+  }
+
+  if (url.searchParams.get('pinned') === 'true') clauses.push('pinned = 1');
   const mealScope = visibilityScope(scope, Boolean(user.show_public_meals), user.id);
   clauses.push(mealScope.clause);
   params.push(...mealScope.params);
-  const result = await ctx.env.DB.prepare(`SELECT * FROM saved_meals WHERE ${clauses.join(' AND ')} ORDER BY name LIMIT 100`)
-    .bind(...params)
+  const result = await ctx.env.DB.prepare(`SELECT * FROM saved_meals WHERE ${clauses.join(' AND ')} ORDER BY ${orderBy} LIMIT 100`)
+    .bind(...params, ...orderParams)
     .all<DbMeal>();
   const meals = await Promise.all(result.results.map(async (meal) => mapMeal(meal, await mealItems(ctx, meal.id))));
   return json({ ok: true, meals });
@@ -883,6 +902,7 @@ function mealInput(input: Record<string, unknown>) {
     name: requireString(input.name, 'Meal name'),
     description: optionalString(input.description),
     visibility: requireVisibility(input.visibility ?? 'private'),
+    pinned: input.pinned === true || input.pinned === 1 ? 1 : 0,
     items: rawItems.map((item, index) => {
       const row = item as Record<string, unknown>;
       return {
@@ -900,8 +920,8 @@ async function createMeal(ctx: Ctx, user: DbUser) {
   for (const item of data.items) await visibleFood(ctx, user, item.foodId);
   const mealId = id();
   const batch: D1PreparedStatement[] = [
-    ctx.env.DB.prepare('INSERT INTO saved_meals (id, owner_user_id, name, description, visibility) VALUES (?, ?, ?, ?, ?)')
-      .bind(mealId, user.id, data.name, data.description, data.visibility),
+    ctx.env.DB.prepare('INSERT INTO saved_meals (id, owner_user_id, name, description, visibility, pinned) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind(mealId, user.id, data.name, data.description, data.visibility, data.pinned),
     ...data.items.map((item) =>
       ctx.env.DB.prepare('INSERT INTO saved_meal_items (id, saved_meal_id, food_id, quantity, quantity_unit, sort_order) VALUES (?, ?, ?, ?, ?, ?)')
         .bind(id(), mealId, item.foodId, item.quantity, item.quantityUnit, item.sortOrder),
@@ -916,8 +936,8 @@ async function updateMeal(ctx: Ctx, user: DbUser, mealId: string) {
   const data = mealInput(await body(ctx));
   for (const item of data.items) await visibleFood(ctx, user, item.foodId);
   await ctx.env.DB.batch([
-    ctx.env.DB.prepare('UPDATE saved_meals SET name = ?, description = ?, visibility = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?')
-      .bind(data.name, data.description, data.visibility, mealId, user.id),
+    ctx.env.DB.prepare('UPDATE saved_meals SET name = ?, description = ?, visibility = ?, pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?')
+      .bind(data.name, data.description, data.visibility, data.pinned, mealId, user.id),
     ctx.env.DB.prepare('DELETE FROM saved_meal_items WHERE saved_meal_id = ?').bind(mealId),
     ...data.items.map((item) =>
       ctx.env.DB.prepare('INSERT INTO saved_meal_items (id, saved_meal_id, food_id, quantity, quantity_unit, sort_order) VALUES (?, ?, ?, ?, ?, ?)')
@@ -963,7 +983,7 @@ function diaryPayload(input: Record<string, unknown>) {
   };
 }
 
-async function insertDiary(ctx: Ctx, user: DbUser, food: DbFood, data: { eatenDate: string; mealLabel: string | null; quantity: number; quantityUnit: string; notes?: string | null }, sourceMealId: string | null = null) {
+async function insertDiary(ctx: Ctx, user: DbUser, food: DbFood, data: { eatenDate: string; mealLabel: string | null; quantity: number; quantityUnit: string; notes?: string | null }, sourceMealId: string | null = null, mealGroupId: string | null = null) {
   const servingQuantity = convertConsumedQuantityToServingQuantity(
     { servingQuantity: food.serving_quantity, servingUnit: food.serving_unit, servingGrams: food.serving_grams, proteinG: food.protein_g, fatG: food.fat_g, carbohydrateG: food.carbohydrate_g, calories: food.calories },
     data.quantity,
@@ -981,10 +1001,10 @@ async function insertDiary(ctx: Ctx, user: DbUser, food: DbFood, data: { eatenDa
   );
   const diaryId = id();
   await ctx.env.DB.prepare(
-    `INSERT INTO diary_items (id, user_id, food_id, source_saved_meal_id, eaten_date, meal_label, quantity, quantity_unit, protein_g, fat_g, carbohydrate_g, calories, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO diary_items (id, user_id, food_id, source_saved_meal_id, meal_group_id, eaten_date, meal_label, quantity, quantity_unit, protein_g, fat_g, carbohydrate_g, calories, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(diaryId, user.id, food.id, sourceMealId, data.eatenDate, data.mealLabel, data.quantity, data.quantityUnit, nutrients.proteinG, nutrients.fatG, nutrients.carbohydrateG, nutrients.calories, data.notes ?? null)
+    .bind(diaryId, user.id, food.id, sourceMealId, mealGroupId, data.eatenDate, data.mealLabel, data.quantity, data.quantityUnit, nutrients.proteinG, nutrients.fatG, nutrients.carbohydrateG, nutrients.calories, data.notes ?? null)
     .run();
   return diaryId;
 }
@@ -1033,6 +1053,12 @@ async function deleteDiaryItem(ctx: Ctx, user: DbUser, itemId: string) {
   return json({ ok: true });
 }
 
+async function deleteDiaryGroup(ctx: Ctx, user: DbUser, groupId: string) {
+  const result = await ctx.env.DB.prepare('DELETE FROM diary_items WHERE meal_group_id = ? AND user_id = ?').bind(groupId, user.id).run();
+  if (!result.meta.changes) throw new ApiError('NOT_FOUND', 'Logged meal not found.', 404);
+  return json({ ok: true, removed: result.meta.changes });
+}
+
 async function addMealToDiary(ctx: Ctx, user: DbUser, mealId: string) {
   await visibleMeal(ctx, user, mealId);
   const input = await body(ctx);
@@ -1043,9 +1069,11 @@ async function addMealToDiary(ctx: Ctx, user: DbUser, mealId: string) {
   )
     .bind(mealId)
     .all<DbFood & { quantity: number; quantity_unit: string }>();
+  // One group id per add, so logging the same meal twice in a day stays two groups.
+  const mealGroupId = id();
   const ids: string[] = [];
   for (const item of items.results) {
-    ids.push(await insertDiary(ctx, user, item, { eatenDate, mealLabel, quantity: item.quantity, quantityUnit: item.quantity_unit }, mealId));
+    ids.push(await insertDiary(ctx, user, item, { eatenDate, mealLabel, quantity: item.quantity, quantityUnit: item.quantity_unit }, mealId, mealGroupId));
   }
   return json({ ok: true, items: await Promise.all(ids.map((itemId) => diaryItem(ctx, user, itemId))) });
 }
@@ -1053,7 +1081,11 @@ async function addMealToDiary(ctx: Ctx, user: DbUser, mealId: string) {
 async function getDay(ctx: Ctx, user: DbUser, date: string) {
   const eatenDate = requireDate(date);
   const items = await ctx.env.DB.prepare(
-    `SELECT di.*, f.description AS foodDescription FROM diary_items di JOIN foods f ON f.id = di.food_id WHERE di.user_id = ? AND di.eaten_date = ? ORDER BY di.created_at`,
+    `SELECT di.*, f.description AS foodDescription, sm.name AS savedMealName
+     FROM diary_items di
+     JOIN foods f ON f.id = di.food_id
+     LEFT JOIN saved_meals sm ON sm.id = di.source_saved_meal_id
+     WHERE di.user_id = ? AND di.eaten_date = ? ORDER BY di.created_at`,
   )
     .bind(user.id, eatenDate)
     .all();

@@ -15,6 +15,8 @@ const tmpDir = join(repoRoot, ".wrangler", "tmp", "db-clone");
 const dataDump = join(tmpDir, `${dbName}-remote-data.sql`);
 const truncateSql = join(tmpDir, `${dbName}-truncate-local.sql`);
 const countSql = join(tmpDir, `${dbName}-counts.sql`);
+const migrationLedgerSql = join(tmpDir, `${dbName}-local-migrations.sql`);
+const migrationQuerySql = join(tmpDir, `${dbName}-local-migration-names.sql`);
 
 const tablesInDeleteOrder = [
   "help_dismissals",
@@ -98,6 +100,19 @@ writeFileSync(
   ].join("\n"),
 );
 
+// The clone replaces d1_migrations with the remote ledger, but a data-only load
+// cannot remove columns that local migrations already added. When local is ahead
+// of remote, re-record those migrations afterwards so the next `db:migrate` does
+// not try to apply them a second time and fail on a duplicate column.
+function localOnlyMigrations() {
+  // Queries go through a file: run() shells out on Windows, which would split an
+  // unquoted --command on its spaces.
+  writeFileSync(migrationQuerySql, "SELECT name FROM d1_migrations ORDER BY id;\n");
+  const result = run(["d1", "execute", dbName, "--local", "--file", migrationQuerySql, "--json"], { capture: true });
+  const parsed = JSON.parse(result.stdout.slice(result.stdout.indexOf("[")));
+  return (parsed[0]?.results ?? []).map((row) => row.name);
+}
+
 console.log(`Exporting remote ${dbName} data...`);
 run([
   "d1",
@@ -110,11 +125,25 @@ run([
   "--skip-confirmation",
 ]);
 
+const localMigrations = localOnlyMigrations();
+
 console.log(`Clearing local ${dbName} tables...`);
 run(["d1", "execute", dbName, "--local", "--file", truncateSql]);
 
 console.log(`Loading remote data into local ${dbName}...`);
 run(["d1", "execute", dbName, "--local", "--file", dataDump]);
+
+if (localMigrations.length) {
+  writeFileSync(
+    migrationLedgerSql,
+    [
+      ...localMigrations.map((name) => `INSERT OR IGNORE INTO d1_migrations (name) VALUES ('${name.replace(/'/g, "''")}');`),
+      "",
+    ].join("\n"),
+  );
+  console.log("Restoring locally applied migrations...");
+  run(["d1", "execute", dbName, "--local", "--file", migrationLedgerSql]);
+}
 
 console.log("Local row counts after clone:");
 run(["d1", "execute", dbName, "--local", "--file", countSql]);

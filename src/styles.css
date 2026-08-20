@@ -262,6 +262,56 @@ main { padding: 28px; max-width: 1180px; width: 100%; }
 }
 .food-results button span { white-space: nowrap; }
 .food-results button small { margin: 0; }
+.results-divider {
+  padding: 2px 4px;
+  color: #5d7f6b;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+}
+.food-results button.meal-result {
+  border-color: #cfe0d4;
+  background: #f2f8f2;
+}
+.food-results button.meal-result span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pin-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 8px 0;
+}
+.pin-toggle span { display: grid; gap: 2px; font-size: 14px; }
+.pin-toggle small { color: #5d7f6b; margin: 0; }
+.diary-meal-group {
+  border-color: #cfe0d4;
+  background: #f4faf4;
+}
+.diary-meal-group strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.diary-meal-items {
+  display: grid;
+  gap: 2px;
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid #cfe0d4;
+}
+.diary-meal-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.diary-meal-item small { color: #40504a; margin: 0; }
+.diary-meal-item button { min-height: 26px; padding: 0 8px; font-size: 12px; }
 .selected-food {
   min-height: 34px;
   display: flex;
