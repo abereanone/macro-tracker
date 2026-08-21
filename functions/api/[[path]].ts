@@ -160,7 +160,10 @@ class ApiError extends Error {
 }
 
 function json(data: unknown, init: ResponseInit = {}) {
-  return Response.json(data, { headers: { 'content-type': 'application/json', ...init.headers }, ...init });
+  return Response.json(data, {
+    headers: { 'content-type': 'application/json', 'cache-control': 'private, no-store', ...init.headers },
+    ...init,
+  });
 }
 
 function error(code: string, message: string, status: number) {
