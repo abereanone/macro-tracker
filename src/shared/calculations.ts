@@ -343,3 +343,12 @@ export function calculateGoalTarget(input: {
     unrealistic: dailyAdjustment > 1000 || weeklyChangeLb > 2,
   };
 }
+
+// When there is not enough recent logging to estimate maintenance from data,
+// the daily calorie goal comes straight from goal body weight rather than
+// carving a deficit out of a guessed maintenance number.
+export const GOAL_WEIGHT_CALORIE_MULTIPLIER = 11;
+
+export function calculateFallbackGoalCalories(goalWeightLb: number): number {
+  return Math.round(goalWeightLb * GOAL_WEIGHT_CALORIE_MULTIPLIER);
+}

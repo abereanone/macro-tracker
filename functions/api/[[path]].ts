@@ -1,4 +1,4 @@
-import { calendarDaysInclusive, calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, estimateMaintenanceFromRecentWindow, estimateMaintenanceFromWeeklyAverages, toLb } from '../../src/shared/calculations';
+import { GOAL_WEIGHT_CALORIE_MULTIPLIER, calendarDaysInclusive, calculateFallbackGoalCalories, calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, estimateMaintenanceFromRecentWindow, estimateMaintenanceFromWeeklyAverages, toLb } from '../../src/shared/calculations';
 import { Resend } from 'resend';
 import {
   nonNegativeNumber,
@@ -79,6 +79,7 @@ const loginCodeExpiresMs = 10 * 60 * 1000;
 const sessionExpiresMs = 30 * 24 * 60 * 60 * 1000;
 const friendInviteExpiresMs = 14 * 24 * 60 * 60 * 1000;
 const maintenanceLookbackDays = 14;
+const minimumLoggedDaysForEstimate = 10;
 const maxLoginAttempts = 5;
 
 export const onRequest: PagesFunction<Env> = async (ctx) => {
@@ -1399,6 +1400,18 @@ function mapMaintenanceSnapshot(snapshot: DbMaintenanceSnapshot) {
   };
 }
 
+// Goal body weight drives every fallback number. Falls back to the given
+// current weight only when there is no active goal plan to read a goal from.
+async function fallbackCalories(ctx: Ctx, user: DbUser, currentWeightLb: number) {
+  const plan = await ctx.env.DB.prepare(
+    'SELECT goal_weight_value, goal_weight_unit FROM goal_plans WHERE user_id = ? AND is_active = 1 AND (archived_at IS NULL OR archived_at = \'\') ORDER BY created_at DESC LIMIT 1',
+  )
+    .bind(user.id)
+    .first<{ goal_weight_value: number; goal_weight_unit: 'lb' | 'kg' }>();
+  const basisLb = plan ? toLb(plan.goal_weight_value, plan.goal_weight_unit) : currentWeightLb;
+  return calculateFallbackGoalCalories(basisLb);
+}
+
 async function latestMaintenance(ctx: Ctx, user: DbUser) {
   const window = maintenanceWindow(user);
   const weights = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? AND entry_date BETWEEN ? AND ? ORDER BY entry_date')
@@ -1409,7 +1422,7 @@ async function latestMaintenance(ctx: Ctx, user: DbUser) {
   const weeklyAvgs = computeWeeklyAverages(weights.results, window.end);
   if (weeklyAvgs) {
     const loggedDays = await loggedCaloriesBetweenWeights(ctx, user, weeklyAvgs.priorWeekStart, weeklyAvgs.recentWeekEnd);
-    if (loggedDays.length >= 7) {
+    if (loggedDays.length >= minimumLoggedDaysForEstimate) {
       const estimate = estimateMaintenanceFromWeeklyAverages({ ...weeklyAvgs, loggedCaloriesByDay: loggedDays });
       return {
         ...estimate,
@@ -1426,7 +1439,7 @@ async function latestMaintenance(ctx: Ctx, user: DbUser) {
     const priorWeight = weights.results.find((weight) => weight.entry_date < window.end);
     if (priorWeight) {
       const loggedDays = await loggedCaloriesBetweenWeights(ctx, user, window.start, window.end);
-      if (loggedDays.length >= 7) {
+      if (loggedDays.length >= minimumLoggedDaysForEstimate) {
         const estimate = estimateMaintenanceFromRecentWindow({
           windowStart: window.start,
           windowEnd: window.end,
@@ -1444,13 +1457,14 @@ async function latestMaintenance(ctx: Ctx, user: DbUser) {
     }
 
     const weight = mapWeightPoint(todayWeight);
+    const calories = await fallbackCalories(ctx, user, weight.valueLb);
     return {
       calculatedDate: weight.date,
-      maintenanceCalories: Math.round(weight.valueLb * 10),
-      estimatedMaintenanceCalories: Math.round(weight.valueLb * 10),
+      maintenanceCalories: calories,
+      estimatedMaintenanceCalories: calories,
       source: 'body-weight-fallback',
       latestWeight: weight,
-      message: 'Starting estimate: add weights in both the past 7 days and the prior 7 days, plus at least 7 logged food days, to estimate maintenance calories.',
+      message: 'Using your goal weight x 11 until there is enough data. Log your weight in both the past 7 days and the prior 7 days, plus at least 10 days of food in the past 14, to get a calculated goal.',
     };
   }
 
@@ -1461,13 +1475,14 @@ async function latestMaintenance(ctx: Ctx, user: DbUser) {
   if (!latestWeight) return null;
 
   const weight = mapWeightPoint(latestWeight);
+  const calories = await fallbackCalories(ctx, user, weight.valueLb);
   return {
     calculatedDate: weight.date,
-    maintenanceCalories: Math.round(weight.valueLb * 10),
-    estimatedMaintenanceCalories: Math.round(weight.valueLb * 10),
+    maintenanceCalories: calories,
+    estimatedMaintenanceCalories: calories,
     source: 'body-weight-fallback',
     latestWeight: weight,
-    message: "Starting estimate: log your weight in the past 7 days and the prior 7 days to calculate maintenance from weekly averages.",
+    message: "Using your goal weight x 11 until there is enough data. Log your weight in both the past 7 days and the prior 7 days, plus at least 10 days of food in the past 14, to get a calculated goal.",
   };
 }
 
@@ -1483,7 +1498,7 @@ async function recalculateMaintenanceSnapshot(ctx: Ctx, user: DbUser, endWeight:
   const weeklyAvgs = computeWeeklyAverages(weights.results, window.end);
   if (weeklyAvgs) {
     const loggedDays = await loggedCaloriesBetweenWeights(ctx, user, weeklyAvgs.priorWeekStart, weeklyAvgs.recentWeekEnd);
-    if (loggedDays.length >= 7) {
+    if (loggedDays.length >= minimumLoggedDaysForEstimate) {
       estimate = estimateMaintenanceFromWeeklyAverages({ ...weeklyAvgs, loggedCaloriesByDay: loggedDays });
     }
   }
@@ -1493,7 +1508,7 @@ async function recalculateMaintenanceSnapshot(ctx: Ctx, user: DbUser, endWeight:
     const priorWeight = weights.results.find((w) => w.entry_date < endWeight.entry_date);
     if (priorWeight) {
       const loggedDays = await loggedCaloriesBetweenWeights(ctx, user, window.start, window.end);
-      if (loggedDays.length >= 7) {
+      if (loggedDays.length >= minimumLoggedDaysForEstimate) {
         estimate = estimateMaintenanceFromRecentWindow({
           windowStart: window.start,
           windowEnd: window.end,
@@ -1727,6 +1742,23 @@ async function activeGoalPlan(ctx: Ctx, user: DbUser) {
     weeklyChangeLb: Math.round((weeklyChangeLb + Number.EPSILON) * 100) / 100,
     direction: weeklyChangeLb < 0 ? 'lose' : weeklyChangeLb > 0 ? 'gain' : 'maintain',
   };
+  // Maintenance is only a real estimate when it came from weigh-ins plus enough
+  // logged days. Otherwise it is body weight x 10, and subtracting a deficit
+  // from a guess compounds the guess — target goal body weight directly instead.
+  if (maintenance.source === 'body-weight-fallback') {
+    const calculation = {
+      days: calendarDaysInclusive(dateInUserTimezone(user), plan.target_date) - 1,
+      weightChangeLb: Math.round((goalWeightLb - latestWeightLb + Number.EPSILON) * 100) / 100,
+      dailyAdjustment: 0,
+      weeklyChangeLb: goalPace.weeklyChangeLb,
+      targetCalories: calculateFallbackGoalCalories(goalWeightLb),
+      unrealistic: false,
+      source: 'goal-weight-fallback',
+      basisLb: Math.round(goalWeightLb * 10) / 10,
+      multiplier: GOAL_WEIGHT_CALORIE_MULTIPLIER,
+    };
+    return json({ ok: true, plan, goalPace, maintenance, calculation });
+  }
   const calculation = calculateGoalTarget({
     currentWeightLb: latestWeightLb,
     goalWeightLb,

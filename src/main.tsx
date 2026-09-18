@@ -111,6 +111,9 @@ type ActiveGoal = {
     targetCalories: number;
     weeklyChangeLb: number;
     unrealistic?: boolean;
+    source?: string;
+    basisLb?: number;
+    multiplier?: number;
   } | null;
   message?: string;
 };
@@ -2585,6 +2588,7 @@ function Goals({ user, viewingUser }: { user: User; viewingUser?: FriendUser | n
   }, [viewingUser?.id]);
   const maintenance = activePlan?.maintenance;
   const calculation = activePlan?.calculation;
+  const isGoalWeightFallback = calculation?.source === "goal-weight-fallback";
   const allGoals: any[] = [];
   const showArchived = false;
   const setShowArchived = (_value: boolean) => {};
@@ -2609,7 +2613,7 @@ function Goals({ user, viewingUser }: { user: User; viewingUser?: FriendUser | n
                 You need to {activePlan.goalPace.direction}{" "}
                 {fmtPaceLb(Math.abs(activePlan.goalPace.weeklyChangeLb))} to
                 achieve this goal
-                {calculation
+                {calculation && !isGoalWeightFallback
                   ? ` which means a daily calorie deficit of ${calculation.dailyAdjustment}.`
                   : "."}
               </p>
@@ -2617,7 +2621,26 @@ function Goals({ user, viewingUser }: { user: User; viewingUser?: FriendUser | n
           ) : (
             <p>Add a current weight to calculate the weekly pace needed.</p>
           )}
-          {maintenance && (
+          {isGoalWeightFallback && calculation && (
+            <div className="calculation-work">
+              <strong className="highlight-stat">
+                Your daily calorie goal is {calculation.targetCalories}{" "}
+                calories/day.
+              </strong>
+              <span>
+                That is your goal weight × {calculation.multiplier ?? 11}:{" "}
+                {calculation.basisLb} lb × {calculation.multiplier ?? 11} ={" "}
+                {calculation.targetCalories} calories/day.
+              </span>
+              <span>
+                There is not enough recent data to estimate your maintenance
+                calories, so no deficit is being calculated. To switch to a
+                calculated goal, log your weight in both the past 7 days and the
+                prior 7 days, plus at least 10 days of food in the past 14.
+              </span>
+            </div>
+          )}
+          {maintenance && !isGoalWeightFallback && (
             <div className="calculation-work">
               <strong className="highlight-stat">
                 Your maintenance calories: {maintenance.maintenanceCalories}{" "}
