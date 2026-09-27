@@ -431,11 +431,16 @@ function displayName(user: Pick<DbUser, 'email' | 'first_name' | 'last_name'>) {
   return [user.first_name, user.last_name].filter(Boolean).join(' ') || user.email;
 }
 
+// Friend-facing name: never the full email, so it can't leak or blow out narrow layouts.
+function friendName(user: Pick<DbUser, 'email' | 'first_name' | 'last_name'>) {
+  return [user.first_name, user.last_name].filter(Boolean).join(' ') || user.email.split('@')[0];
+}
+
 function mapFriendUser(user: Pick<DbUser, 'id' | 'email' | 'first_name' | 'last_name'>) {
   return {
     id: user.id,
     email: user.email,
-    name: displayName(user),
+    name: friendName(user),
   };
 }
 
@@ -498,7 +503,7 @@ async function listFriends(ctx: Ctx, user: DbUser) {
       inviter: {
         id: invite.inviter_user_id,
         email: invite.inviter_email,
-        name: displayName({ email: invite.inviter_email, first_name: invite.inviter_first_name, last_name: invite.inviter_last_name }),
+        name: friendName({ email: invite.inviter_email, first_name: invite.inviter_first_name, last_name: invite.inviter_last_name }),
       },
       expiresAt: invite.expires_at,
       createdAt: invite.created_at,
