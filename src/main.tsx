@@ -741,6 +741,7 @@ function Login({
             inputMode="numeric"
             pattern="\d{6}"
             autoComplete="one-time-code"
+            autoFocus
             placeholder="123456"
             required
           />
