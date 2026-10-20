@@ -10,7 +10,13 @@ import {
   round,
   toLb,
 } from "./shared/calculations";
-import { LABEL_SCAN_MAX_PHOTOS, type LabelScanDraft } from "./shared/labelScan";
+import {
+  LABEL_SCAN_MAX_PHOTOS,
+  expandUpcE,
+  normalizeBarcode,
+  type LabelScanDraft,
+} from "./shared/labelScan";
+import zxingWasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";
 import {
   Activity,
   BarChart3,
@@ -24,6 +30,7 @@ import {
   Pin,
   Plus,
   Scale,
+  ScanBarcode,
   Settings,
   Target,
   Users,
@@ -58,6 +65,7 @@ type Food = {
   calories: number;
   visibility: "private" | "public";
   notes?: string | null;
+  barcode?: string | null;
 };
 type MealItem = {
   foodId: string;
@@ -1041,7 +1049,20 @@ function Dashboard({
             />
           ) : (
           <>
-          <LabelScanner onScanned={setScan} />
+          <FoodScanner
+            onScanned={setScan}
+            onUseExisting={(food) => {
+              setSelectedFood(food);
+              setSelectedMeal(null);
+              setFoodSearch(food.description);
+              setFoodQuantity(String(food.servingQuantity));
+              setFoodQuantityUnit(food.servingUnit);
+              setShowQuantity(true);
+              setPopupMessage(
+                `Using ${food.description}. Check the quantity, then tap Add food.`,
+              );
+            }}
+          />
           <form
             onSubmit={async (event) => {
               event.preventDefault();
@@ -1518,10 +1539,15 @@ function Foods({
       {!readOnly && (
       <Panel title={editingFood && !scan ? "Modify Food" : "Add Food"}>
         {!editingFood && (
-          <LabelScanner
+          <FoodScanner
             onScanned={(draft) => {
               setMessage("");
               editFood(foodFromScan(draft, user.id), draft);
+            }}
+            onUseExisting={(food) => {
+              setScope("all");
+              setSearch(food.description);
+              setMessage(`${food.description} is already in the food list.`);
             }}
           />
         )}
@@ -1571,6 +1597,7 @@ function FoodForm({
   const [servingQuantity, setServingQuantity] = useState("");
   const [servingUnit, setServingUnit] = useState("g");
   const [servingGrams, setServingGrams] = useState("");
+  const [barcode, setBarcode] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [macros, setMacros] = useState({
     proteinG: 0,
@@ -1597,6 +1624,7 @@ function FoodForm({
     setServingQuantity(food?.servingQuantity ? String(food.servingQuantity) : "");
     setServingUnit(food?.servingUnit ?? "g");
     setServingGrams(food?.servingGrams ? String(food.servingGrams) : "");
+    setBarcode(food?.barcode ?? "");
     setVisibility(food?.visibility ?? "public");
     setMacros({
       proteinG: food?.proteinG ?? 0,
@@ -1651,6 +1679,7 @@ function FoodForm({
             carbohydrateG: macros.carbohydrateG,
             calories: caloriesToSave,
             visibility,
+            barcode: barcode || null,
           }),
         },
       );
@@ -1658,6 +1687,7 @@ function FoodForm({
       setServingQuantity("");
       setServingUnit("g");
       setServingGrams("");
+      setBarcode("");
       setVisibility("public");
       setMacros({ proteinG: 0, fatG: 0, carbohydrateG: 0 });
       setCalories("");
@@ -1711,6 +1741,9 @@ function FoodForm({
           {scan.warnings.map((warning) => (
             <span key={warning}>{warning}</span>
           ))}
+          {barcode && (
+            <span>Saved with barcode {barcode}, so the next scan finds it.</span>
+          )}
         </div>
       )}
       <label className="field">
@@ -1885,6 +1918,7 @@ function foodFromScan(draft: LabelScanDraft, ownerUserId: string): Food {
     carbohydrateG: draft.carbohydrateG,
     calories: draft.calories,
     visibility: "public",
+    barcode: draft.barcode,
   };
 }
 
@@ -1906,90 +1940,286 @@ async function photoToDataUrl(file: File, maxEdge = 1600): Promise<string> {
   return canvas.toDataURL("image/jpeg", 0.85);
 }
 
-function LabelScanner({
+const barcodeFormats = ["ean_13", "ean_8", "upc_a", "upc_e"] as const;
+type BarcodeReader = {
+  detect(image: ImageBitmap): Promise<{ rawValue: string; format: string }[]>;
+};
+let zxingReader: Promise<BarcodeReader> | null = null;
+
+// The browser's own BarcodeDetector is used where it exists (Chrome on Android);
+// elsewhere, including iPhone Safari, a self-hosted ZXing WebAssembly reader is
+// loaded the first time a barcode is scanned.
+function loadZxingReader(): Promise<BarcodeReader> {
+  zxingReader ??= import("barcode-detector/ponyfill").then(
+    ({ BarcodeDetector, setZXingModuleOverrides }) => {
+      setZXingModuleOverrides({
+        locateFile: (path: string, prefix: string) =>
+          path.endsWith(".wasm") ? zxingWasmUrl : prefix + path,
+      });
+      return new BarcodeDetector({ formats: [...barcodeFormats] });
+    },
+  );
+  return zxingReader;
+}
+
+async function nativeBarcodeReader(): Promise<BarcodeReader | null> {
+  const Native = (window as { BarcodeDetector?: any }).BarcodeDetector;
+  if (!Native) return null;
+  try {
+    const supported: string[] = await Native.getSupportedFormats();
+    if (!supported.includes("ean_13")) return null;
+    return new Native({ formats: barcodeFormats.filter((f) => supported.includes(f)) });
+  } catch {
+    return null;
+  }
+}
+
+async function detectBarcode(image: Blob): Promise<string | null> {
+  const bitmap = await createImageBitmap(image);
+  try {
+    const native = await nativeBarcodeReader();
+    // When the native reader finds nothing, ZXing gets a second try.
+    for (const reader of native ? [native, null] : [null]) {
+      const results = await (reader ?? (await loadZxingReader())).detect(bitmap);
+      for (const result of results) {
+        const digits = result.format === "upc_e" ? expandUpcE(result.rawValue) : result.rawValue;
+        const barcode = digits ? normalizeBarcode(digits) : null;
+        if (barcode) return barcode;
+      }
+    }
+    return null;
+  } finally {
+    bitmap.close();
+  }
+}
+
+type FoodMatch = Food & { matchedBy: "barcode" | "name" | "nutrition" };
+type ScanPhoto = { file: File; url: string };
+
+const matchReasons: Record<FoodMatch["matchedBy"], string> = {
+  barcode: "Same barcode",
+  name: "Similar name",
+  nutrition: "Same nutrition",
+};
+
+// Barcode first (foods in the app, then Open Food Facts); if the product isn't
+// known, photos of the label are read instead. Either way, likely duplicates
+// already in the app are offered before a new food is created.
+function FoodScanner({
   onScanned,
+  onUseExisting,
 }: {
   onScanned: (draft: LabelScanDraft) => void;
+  onUseExisting: (food: Food) => void;
 }) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [photos, setPhotos] = useState<string[]>([]);
-  const [preparing, setPreparing] = useState(false);
-  const [scanning, setScanning] = useState(false);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
+  const labelInputRef = useRef<HTMLInputElement>(null);
+  const [mode, setMode] = useState<"start" | "label" | "matches">("start");
+  const [photos, setPhotos] = useState<ScanPhoto[]>([]);
+  const [barcode, setBarcode] = useState<string | null>(null);
+  const [productName, setProductName] = useState<string | null>(null);
+  const [matches, setMatches] = useState<FoodMatch[]>([]);
+  const [pendingDraft, setPendingDraft] = useState<LabelScanDraft | null>(null);
+  const [busy, setBusy] = useState<"" | "barcode" | "photo" | "label">("");
+  const [info, setInfo] = useState("");
   const [error, setError] = useState("");
-  const canAddPhoto = photos.length < LABEL_SCAN_MAX_PHOTOS && !scanning;
 
-  async function addPhotos(files: FileList | null) {
-    if (!files?.length) return;
+  function reset() {
+    setMode("start");
+    setPhotos([]);
+    setBarcode(null);
+    setProductName(null);
+    setMatches([]);
+    setPendingDraft(null);
+    setInfo("");
     setError("");
-    setPreparing(true);
+  }
+
+  function finish(draft: LabelScanDraft, found: FoodMatch[]) {
+    if (found.length) {
+      setMatches(found);
+      setPendingDraft(draft);
+      setMode("matches");
+      return;
+    }
+    reset();
+    onScanned(draft);
+  }
+
+  async function scanBarcode(file: File | undefined) {
+    if (!file) return;
+    reset();
+    setBusy("barcode");
     try {
-      const room = LABEL_SCAN_MAX_PHOTOS - photos.length;
-      const prepared = await Promise.all(
-        Array.from(files).slice(0, room).map((file) => photoToDataUrl(file)),
-      );
-      setPhotos((current) =>
-        [...current, ...prepared].slice(0, LABEL_SCAN_MAX_PHOTOS),
-      );
-      if (files.length > room) {
-        setError(`Only ${LABEL_SCAN_MAX_PHOTOS} photos can be used per scan.`);
+      const code = await detectBarcode(file).catch(() => null);
+      if (!code) {
+        setError(
+          "No barcode found in that photo. Move closer so the barcode fills most of the photo, keep it flat and in focus, and avoid glare. Or photograph the label instead.",
+        );
+        return;
       }
+      const result = await api<{
+        matches: FoodMatch[];
+        draft: LabelScanDraft | null;
+        productName: string | null;
+      }>(`/foods/barcode/${code}`);
+      if (result.draft) {
+        finish(result.draft, result.matches);
+      } else if (result.matches.length) {
+        setBarcode(code);
+        setMatches(result.matches);
+        setMode("matches");
+      } else {
+        setBarcode(code);
+        setProductName(result.productName);
+        setMode("label");
+        setInfo(
+          `${result.productName ?? "This product"} isn't in the food databases yet. Photograph its Nutrition Facts label. It will be saved with the barcode, so scanning it next time is instant.`,
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The barcode couldn't be looked up.");
+    } finally {
+      setBusy("");
+      if (barcodeInputRef.current) barcodeInputRef.current.value = "";
+    }
+  }
+
+  async function addLabelPhoto(file: File | undefined) {
+    if (!file) return;
+    setError("");
+    setBusy("photo");
+    try {
+      const url = await photoToDataUrl(file);
+      setPhotos((current) => [...current, { file, url }].slice(0, LABEL_SCAN_MAX_PHOTOS));
+      setMode("label");
     } catch (err) {
       setError(err instanceof Error ? err.message : "That photo couldn't be opened.");
     } finally {
-      setPreparing(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      setBusy("");
+      if (labelInputRef.current) labelInputRef.current.value = "";
     }
   }
 
   async function readLabel() {
     setError("");
-    setScanning(true);
+    setBusy("label");
     try {
-      const result = await api<{ draft: LabelScanDraft }>("/foods/scan-label", {
-        method: "POST",
-        body: JSON.stringify({ photos }),
-      });
-      setPhotos([]);
-      onScanned(result.draft);
+      // A barcode visible in the label photos lets the food be found by barcode later.
+      let code = barcode;
+      for (const photo of photos) {
+        if (code) break;
+        code = await detectBarcode(photo.file).catch(() => null);
+      }
+      const result = await api<{ draft: LabelScanDraft; matches: FoodMatch[] }>(
+        "/foods/scan-label",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            photos: photos.map((photo) => photo.url),
+            barcode: code,
+            productName,
+          }),
+        },
+      );
+      finish(result.draft, result.matches);
     } catch (err) {
       setError(err instanceof Error ? err.message : "The label couldn't be read.");
     } finally {
-      setScanning(false);
+      setBusy("");
     }
   }
 
-  return (
-    <div className="label-scanner">
+  const inputs = (
+    <>
       <input
-        ref={fileInputRef}
+        ref={barcodeInputRef}
         type="file"
         accept="image/*"
         hidden
-        onChange={(event) => void addPhotos(event.target.files)}
+        onChange={(event) => void scanBarcode(event.target.files?.[0])}
       />
-      {photos.length === 0 ? (
-        <>
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={preparing}
-          >
-            <Camera size={16} />{" "}
-            {preparing ? "Opening photo..." : "Scan nutrition label"}
+      <input
+        ref={labelInputRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(event) => void addLabelPhoto(event.target.files?.[0])}
+      />
+    </>
+  );
+
+  if (mode === "matches") {
+    return (
+      <div className="food-scanner">
+        {inputs}
+        <strong>Already in the app</strong>
+        <div className="scan-matches">
+          {matches.map((food) => (
+            <div key={food.id} className="scan-match">
+              <span>
+                <strong>{food.description}</strong>
+                <small>
+                  {matchReasons[food.matchedBy]} - {formatFoodSummary(food)}
+                </small>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  reset();
+                  onUseExisting(food);
+                }}
+              >
+                Use this
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="form-actions">
+          {pendingDraft ? (
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                const draft = pendingDraft;
+                reset();
+                onScanned(draft);
+              }}
+            >
+              <Plus size={16} /> Add as a new food
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                setMode("label");
+                setMatches([]);
+              }}
+            >
+              <Camera size={16} /> Photograph the label instead
+            </button>
+          )}
+          <button type="button" className="ghost" onClick={reset}>
+            Cancel
           </button>
-          <small>
-            Take a photo of the Nutrition Facts label. You can add a second
-            photo of the front of the package for the product name.
-          </small>
-        </>
-      ) : (
-        <>
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === "label") {
+    const canAddPhoto = photos.length < LABEL_SCAN_MAX_PHOTOS && !busy;
+    return (
+      <div className="food-scanner">
+        {inputs}
+        {info && <p className="scan-info">{info}</p>}
+        {photos.length > 0 && (
           <div className="label-scanner-photos">
             {photos.map((photo, index) => (
-              <div key={index} className="label-scanner-photo">
-                <img src={photo} alt={`Label photo ${index + 1}`} />
-                {!scanning && (
+              <div key={photo.url} className="label-scanner-photo">
+                <img src={photo.url} alt={`Label photo ${index + 1}`} />
+                {!busy && (
                   <button
                     type="button"
                     className="ghost"
@@ -2004,41 +2234,88 @@ function LabelScanner({
               </div>
             ))}
           </div>
-          <div className="form-actions">
-            <button type="button" onClick={readLabel} disabled={scanning || preparing}>
-              {scanning ? "Reading label..." : "Read label"}
+        )}
+        <div className="form-actions">
+          {photos.length > 0 && (
+            <button type="button" onClick={readLabel} disabled={Boolean(busy)}>
+              {busy === "label" ? "Reading label..." : "Read label"}
             </button>
-            {canAddPhoto && (
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={preparing}
-              >
-                <Camera size={16} /> {preparing ? "Opening photo..." : "Add photo"}
-              </button>
-            )}
-            {!scanning && (
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => {
-                  setPhotos([]);
-                  setError("");
-                }}
-              >
-                Cancel
-              </button>
-            )}
-          </div>
-          {photos.length < LABEL_SCAN_MAX_PHOTOS && !scanning && (
-            <small>
-              Product name not on the label? Add a photo of the front of the
-              package.
-            </small>
           )}
-        </>
-      )}
+          {canAddPhoto && (
+            <button
+              type="button"
+              className={photos.length ? "ghost" : undefined}
+              onClick={() => labelInputRef.current?.click()}
+            >
+              <Camera size={16} /> {photos.length ? "Add photo" : "Photograph label"}
+            </button>
+          )}
+          {busy !== "label" && (
+            <button type="button" className="ghost" onClick={reset}>
+              Cancel
+            </button>
+          )}
+        </div>
+        {busy === "photo" && <small>Opening photo...</small>}
+        {!busy && (
+          <small>
+            {photos.length === 0
+              ? "Photograph the whole Nutrition Facts panel, flat and straight on, in good light. Serving size, calories, fat, carbs, and protein should all be in the photo."
+              : photos.length < LABEL_SCAN_MAX_PHOTOS
+                ? "Name not on the label, or label cut off? Add a photo of the front of the package or the rest of the label."
+                : "Tap Read label."}
+          </small>
+        )}
+        {error && <p className="error-text">{error}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="food-scanner">
+      {inputs}
+      <div className="form-actions">
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => barcodeInputRef.current?.click()}
+          disabled={Boolean(busy)}
+        >
+          <ScanBarcode size={16} />{" "}
+          {busy === "barcode" ? "Looking up barcode..." : "Scan barcode"}
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => labelInputRef.current?.click()}
+          disabled={Boolean(busy)}
+        >
+          <Camera size={16} /> {busy === "photo" ? "Opening photo..." : "Photograph label"}
+        </button>
+      </div>
+      <small>
+        Start with the barcode. If the product isn't found, you'll photograph
+        the Nutrition Facts label.
+      </small>
+      <details className="scan-tips">
+        <summary>What to photograph</summary>
+        <ul>
+          <li>
+            <strong>Barcode first.</strong> Photograph the barcode so it fills
+            most of the photo: flat, in focus, and without glare. Known
+            products fill in instantly.
+          </li>
+          <li>
+            <strong>Not found? The Nutrition Facts label.</strong> Get the whole
+            panel straight on in good light, including serving size, calories,
+            fat, carbs, and protein. On a curved package, take two photos.
+          </li>
+          <li>
+            <strong>Name not on the label?</strong> Add a second photo of the
+            front of the package.
+          </li>
+        </ul>
+      </details>
       {error && <p className="error-text">{error}</p>}
     </div>
   );

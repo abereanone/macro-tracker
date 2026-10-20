@@ -1,6 +1,9 @@
-// Label scanning: a vision model reads nutrition label photos, then the rules here
-// turn that reading into a food draft the user reviews before saving. Shared so the
-// API and the tests use the same rules.
+// Food scanning: a barcode lookup (our foods, then Open Food Facts) or a vision model
+// reading nutrition label photos produces a reading; the rules here turn it into a
+// food draft the user reviews before saving. Shared so the API and the tests use the
+// same rules.
+
+import { convertQuantityToGrams } from './calculations';
 
 export const LABEL_SCAN_MAX_PHOTOS = 2;
 
@@ -44,6 +47,8 @@ export type LabelScanReading = {
   carbohydrateG: number | null;
 };
 
+export type LabelScanSource = 'label' | 'open-food-facts';
+
 export type LabelScanDraft = {
   description: string;
   servingQuantity: number | null;
@@ -54,6 +59,8 @@ export type LabelScanDraft = {
   carbohydrateG: number;
   calories: number;
   servingSizeText: string | null;
+  barcode: string | null;
+  source: LabelScanSource;
   warnings: string[];
 };
 
@@ -88,12 +95,18 @@ export function labelScanHasNutrition(reading: LabelScanReading): boolean {
   return [reading.calories, reading.proteinG, reading.fatG, reading.carbohydrateG].some((value) => value != null);
 }
 
-export function labelScanToFoodDraft(reading: LabelScanReading): LabelScanDraft {
+export function labelScanToFoodDraft(
+  reading: LabelScanReading,
+  { barcode = null, source = 'label' }: { barcode?: string | null; source?: LabelScanSource } = {},
+): LabelScanDraft {
   const warnings: string[] = [];
+  if (source === 'open-food-facts') {
+    warnings.push('Found in Open Food Facts, a community database. Check it against the package.');
+  }
   const serving = reading.per100g
     ? { quantity: 100, unit: 'g', grams: 100 }
     : servingFromLabel(reading.servingAmount, reading.servingUnit, reading.servingGrams);
-  if (reading.per100g) warnings.push('This label lists values per 100 g, so the food is set up per 100 g.');
+  if (reading.per100g) warnings.push('Nutrition is listed per 100 g, so the food is set up per 100 g.');
   if (serving.quantity == null) {
     warnings.push("Couldn't read the serving size. Enter it from the label.");
   } else if (!['g', 'oz'].includes(serving.unit) && serving.grams == null) {
@@ -135,17 +148,177 @@ export function labelScanToFoodDraft(reading: LabelScanReading): LabelScanDraft 
     carbohydrateG,
     calories,
     servingSizeText: reading.servingSizeText,
+    barcode,
+    source,
     warnings,
   };
+}
+
+// Accepts UPC-A, EAN-13, EAN-8 and GTIN-14 digits and returns the canonical form we
+// store and look up: 12-digit UPC-A codes become EAN-13 by adding a leading zero, the
+// same way Open Food Facts stores them.
+export function normalizeBarcode(raw: string): string | null {
+  let digits = raw.replace(/\D/g, '');
+  if (digits.length === 14 && digits.startsWith('0')) digits = digits.slice(1);
+  if (digits.length === 12) digits = `0${digits}`;
+  if (![8, 13, 14].includes(digits.length) || !validGtinCheckDigit(digits)) return null;
+  return digits;
+}
+
+function validGtinCheckDigit(digits: string): boolean {
+  const body = digits.slice(0, -1);
+  let sum = 0;
+  for (let i = 0; i < body.length; i += 1) {
+    const digit = Number(body[body.length - 1 - i]);
+    sum += i % 2 === 0 ? digit * 3 : digit;
+  }
+  return (10 - (sum % 10)) % 10 === Number(digits[digits.length - 1]);
+}
+
+// Small US packages use 8-digit UPC-E codes; databases index the 12-digit UPC-A form.
+export function expandUpcE(code: string): string | null {
+  if (!/^[01]\d{7}$/.test(code)) return null;
+  const [system, d1, d2, d3, d4, d5, d6, check] = code.split('');
+  let middle: string;
+  if (['0', '1', '2'].includes(d6)) middle = `${d1}${d2}${d6}0000${d3}${d4}${d5}`;
+  else if (d6 === '3') middle = `${d1}${d2}${d3}00000${d4}${d5}`;
+  else if (d6 === '4') middle = `${d1}${d2}${d3}${d4}00000${d5}`;
+  else middle = `${d1}${d2}${d3}${d4}${d5}0000${d6}`;
+  return `${system}${middle}${check}`;
+}
+
+// "2/3 cup (55 g)" -> { amount: 0.667, unit: "cup", grams: 55 }; "30 g" -> grams 30.
+export function parseServingSize(text: string | null | undefined): { amount: number | null; unit: string | null; grams: number | null } {
+  const none = { amount: null, unit: null, grams: null };
+  if (!text) return none;
+  const value = text.trim();
+  const weight = /\(\s*(\d+(?:[.,]\d+)?)\s*(g|gr|grams?|ml)\s*\)/i.exec(value);
+  const household = /^(\d+\s+\d+\/\d+|\d+\/\d+|\d*[.,]?\d+)\s*([^\d(]*)/.exec(value);
+  const grams = weight ? labelNumber(weight[1]) : null;
+  if (!household) return { ...none, grams };
+  const amount = labelNumber(household[1]);
+  const unit = household[2].trim().replace(/\s+/g, ' ') || null;
+  if (!weight && unit && /^(g|gr|grams?|ml)$/i.test(unit)) return { amount, unit: 'g', grams: amount };
+  return { amount, unit, grams };
+}
+
+export type OpenFoodFactsProduct = {
+  product_name?: string;
+  brands?: string;
+  serving_size?: string;
+  serving_quantity?: number | string;
+  nutriments?: Record<string, unknown>;
+};
+
+// Open Food Facts gives per-serving values when the package lists them, otherwise
+// per 100 g.
+export function openFoodFactsReading(product: OpenFoodFactsProduct): LabelScanReading | null {
+  const nutriments = product.nutriments ?? {};
+  const value = (key: string, basis: 'serving' | '100g') => labelNumber(nutriments[`${key}_${basis}`]);
+  const kcal = (basis: 'serving' | '100g') => {
+    const direct = value('energy-kcal', basis);
+    if (direct != null) return direct;
+    const kj = value('energy-kj', basis) ?? value('energy', basis);
+    return kj == null ? null : kj / 4.184;
+  };
+  const values = (basis: 'serving' | '100g') => ({
+    calories: kcal(basis),
+    proteinG: value('proteins', basis),
+    fatG: value('fat', basis),
+    carbohydrateG: value('carbohydrates', basis),
+  });
+  const serving = parseServingSize(product.serving_size);
+  const servingGrams = labelNumber(product.serving_quantity) ?? serving.grams;
+  const perServing = values('serving');
+  const usePerServing = perServing.calories != null && servingGrams != null;
+  const nutrition = usePerServing ? perServing : values('100g');
+
+  const reading: LabelScanReading = {
+    readable: true,
+    productName: openFoodFactsProductName(product),
+    servingSizeText: labelText(product.serving_size),
+    servingAmount: usePerServing ? serving.amount : null,
+    servingUnit: usePerServing ? serving.unit : null,
+    servingGrams: usePerServing ? servingGrams : null,
+    per100g: !usePerServing,
+    ...nutrition,
+  };
+  return labelScanHasNutrition(reading) ? reading : null;
+}
+
+export function openFoodFactsProductName(product: OpenFoodFactsProduct): string | null {
+  const name = labelText(product.product_name);
+  const brand = labelText(product.brands?.split(',')[0]);
+  if (name && brand && !name.toLowerCase().includes(brand.toLowerCase())) return `${brand} ${name}`;
+  return name ?? brand;
+}
+
+type ComparableFood = {
+  description: string;
+  servingQuantity: number | null;
+  servingUnit: string;
+  servingGrams: number | null;
+  calories: number;
+  proteinG: number;
+  fatG: number;
+  carbohydrateG: number;
+};
+
+const nameStopWords = new Set(['and', 'with', 'the', 'of', 'a', 'in', 'for', 'or']);
+
+export function foodNameTokens(name: string): string[] {
+  const tokens = name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((token) => token.length > 1 && !nameStopWords.has(token));
+  return [...new Set(tokens)];
+}
+
+// Scores how likely an existing food is the product just scanned, from 0 upward.
+// Names alone must be close; matching nutrition per gram lets a shorter name like
+// "Honey Oat Granola" match "Sunny Acres Honey Oat Granola Clusters".
+export function foodMatchScore(scanned: ComparableFood, existing: ComparableFood): number {
+  const a = foodNameTokens(scanned.description);
+  const b = foodNameTokens(existing.description);
+  const shared = a.filter((token) => b.includes(token)).length;
+  const nameScore = a.length && b.length ? (2 * shared) / (a.length + b.length) : 0;
+  return nameScore + (sameNutrition(scanned, existing) ? 0.4 : 0);
+}
+
+export const FOOD_MATCH_THRESHOLD = 0.75;
+
+function sameNutrition(a: ComparableFood, b: ComparableFood): boolean {
+  const gramsA = servingWeight(a);
+  const gramsB = servingWeight(b);
+  if (!gramsA || !gramsB) return false;
+  const per100 = (food: ComparableFood, grams: number) =>
+    [food.calories, food.proteinG, food.fatG, food.carbohydrateG].map((value) => (value / grams) * 100);
+  const [calA, ...macrosA] = per100(a, gramsA);
+  const [calB, ...macrosB] = per100(b, gramsB);
+  if (Math.abs(calA - calB) > Math.max(8, calA * 0.06)) return false;
+  return macrosA.every((value, index) => Math.abs(value - macrosB[index]) <= Math.max(1.5, value * 0.1));
+}
+
+function servingWeight(food: ComparableFood): number | null {
+  if (food.servingGrams && food.servingGrams > 0) return food.servingGrams;
+  if (!food.servingQuantity) return null;
+  try {
+    return convertQuantityToGrams(food.servingQuantity, food.servingUnit);
+  } catch {
+    return null;
+  }
 }
 
 // Maps the label's household serving ("2/3 cup (55g)", "3 cookies (30g)") onto the
 // units the food form offers. Falls back to grams when the household unit has no
 // equivalent, since nearly every label prints the gram weight.
-function servingFromLabel(amount: number | null, rawUnit: string | null, grams: number | null) {
+function servingFromLabel(amount: number | null, rawUnit: string | null, rawGrams: number | null) {
+  // The food form accepts two decimals.
+  const grams = rawGrams == null ? null : roundTo(rawGrams, 2);
   const unit = rawUnit ? labelUnit(rawUnit) : null;
   if (unit?.unit === 'g') {
-    const quantity = amount ?? grams;
+    const quantity = amount == null ? grams : roundTo(amount, 2);
     return { quantity, unit: 'g', grams: quantity };
   }
   if (unit && amount != null && amount > 0) {

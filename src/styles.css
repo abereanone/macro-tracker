@@ -543,9 +543,25 @@ small { display: block; color: #63716b; margin-top: 4px; }
   background: #dcfce7;
 }
 
-.label-scanner { display: grid; gap: 8px; margin-bottom: 16px; justify-items: start; }
-.label-scanner small { margin-top: 0; }
-.label-scanner .error-text { margin: 0; }
+.food-scanner { display: grid; gap: 8px; margin-bottom: 16px; }
+.food-scanner small { margin-top: 0; }
+.food-scanner .error-text, .food-scanner .scan-info { margin: 0; }
+.scan-info { color: #40504a; }
+.scan-tips { font-size: 14px; color: #40504a; }
+.scan-tips summary { cursor: pointer; color: #22614d; font-weight: 600; }
+.scan-tips ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 6px; }
+.scan-matches { display: grid; gap: 8px; }
+.scan-match {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #dde4df;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.scan-match span { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.scan-match button { flex: none; }
 .label-scanner-photos { display: flex; gap: 10px; flex-wrap: wrap; }
 .label-scanner-photo { position: relative; width: 84px; height: 84px; }
 .label-scanner-photo img {

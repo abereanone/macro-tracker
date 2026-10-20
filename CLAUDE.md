@@ -43,6 +43,7 @@ Frontend changes under `src/`, `public/`, Vite config, or dependencies require `
 - Maintenance calorie estimation requires at least 2 weight entries and at least 7 logged food days between them. Falls back to `weight_lb × 10` until enough data exists.
 - `calorie_goal_type` is either `'manual'` (user-set value) or `'goal-based'` (derived from the active goal plan's `calculateGoalTarget` result).
 - `daily_goal_definitions` are seeded with defaults on first access via `ensureDailyGoalDefaults`.
+- Barcode scanning: the browser decodes the barcode from a photo (native `BarcodeDetector`, else the self-hosted ZXing WebAssembly reader from `barcode-detector`), then `GET /api/foods/barcode/:code` checks `foods.barcode` (stored normalized to EAN-13) and falls back to Open Food Facts. Barcode and label scans both return likely existing foods (`findFoodMatches`: same barcode, similar name, or identical nutrition) so users can reuse a food instead of creating a duplicate.
 - Label scanning (`POST /api/foods/scan-label`) sends 1–2 photos to Workers AI (`env.AI`, Gemma 4 26B, free plan) and returns a food draft; nothing is saved until the user submits the food form. Photos are not stored. `label_scans` logs each attempt for the per-user limit (20 per rolling 24 hours). The AI binding always calls Cloudflare, even in local `preview`, and counts against the account's 10,000 free Neurons per day (~10 per scan).
 
 ## Auth

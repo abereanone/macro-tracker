@@ -1,6 +1,20 @@
 import { GOAL_WEIGHT_CALORIE_MULTIPLIER, calendarDaysInclusive, calculateFallbackGoalCalories, calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, estimateMaintenanceFromRecentWindow, estimateMaintenanceFromWeeklyAverages, toLb } from '../../src/shared/calculations';
 import { Resend } from 'resend';
-import { LABEL_SCAN_MAX_PHOTOS, labelScanHasNutrition, labelScanPrompt, labelScanToFoodDraft, parseLabelScanReading } from '../../src/shared/labelScan';
+import {
+  FOOD_MATCH_THRESHOLD,
+  LABEL_SCAN_MAX_PHOTOS,
+  foodMatchScore,
+  foodNameTokens,
+  labelScanHasNutrition,
+  labelScanPrompt,
+  labelScanToFoodDraft,
+  normalizeBarcode,
+  openFoodFactsProductName,
+  openFoodFactsReading,
+  parseLabelScanReading,
+  type LabelScanDraft,
+  type OpenFoodFactsProduct,
+} from '../../src/shared/labelScan';
 import {
   nonNegativeNumber,
   normalizeEmail,
@@ -47,6 +61,7 @@ type DbFood = {
   calories: number;
   visibility: string;
   notes: string | null;
+  barcode: string | null;
 };
 type DbMeal = { id: string; owner_user_id: string; name: string; description: string | null; visibility: string; pinned: number };
 type DbWeight = { id: string; entry_date: string; weight_value: number; weight_unit: 'lb' | 'kg'; notes: string | null };
@@ -134,6 +149,7 @@ async function route(ctx: Ctx) {
   if (path === '/foods' && method === 'GET') return listFoods(ctx, await readableUser(ctx, user, url), url);
   if (path === '/foods' && method === 'POST') return createFood(ctx, user);
   if (path === '/foods/scan-label' && method === 'POST') return scanFoodLabel(ctx, user);
+  if (segments[0] === 'foods' && segments[1] === 'barcode' && segments[2] && method === 'GET') return lookupFoodBarcode(ctx, user, segments[2]);
   if (segments[0] === 'foods' && segments[1] && method === 'PUT') return updateFood(ctx, user, segments[1]);
   if (segments[0] === 'foods' && segments[1] && method === 'DELETE') return archiveFood(ctx, user, segments[1]);
   if (segments[0] === 'foods' && segments[1] && segments[2] === 'copy' && method === 'POST') return copyFood(ctx, user, segments[1]);
@@ -694,6 +710,7 @@ function mapFood(food: DbFood) {
     calories: food.calories,
     visibility: food.visibility,
     notes: food.notes,
+    barcode: food.barcode,
   };
 }
 
@@ -709,7 +726,15 @@ function foodInput(input: Record<string, unknown>) {
     calories: nonNegativeNumber(input.calories, 'Calories'),
     visibility: requireVisibility(input.visibility ?? 'private'),
     notes: optionalString(input.notes),
+    barcode: optionalBarcode(input.barcode),
   };
+}
+
+function optionalBarcode(value: unknown) {
+  if (value == null || value === '') return null;
+  const barcode = typeof value === 'string' ? normalizeBarcode(value) : null;
+  if (!barcode) throw new ApiError('VALIDATION_ERROR', 'Barcode is not valid.');
+  return barcode;
 }
 
 function defaultServingGrams(servingQuantity: number, servingUnit: string) {
@@ -809,10 +834,10 @@ async function createFood(ctx: Ctx, user: DbUser) {
   await assertUniqueFoodDescription(ctx, user, data.description);
   const foodId = id();
   await ctx.env.DB.prepare(
-    `INSERT INTO foods (id, owner_user_id, description, serving_quantity, serving_unit, serving_grams, protein_g, fat_g, carbohydrate_g, calories, visibility, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO foods (id, owner_user_id, description, serving_quantity, serving_unit, serving_grams, protein_g, fat_g, carbohydrate_g, calories, visibility, notes, barcode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(foodId, user.id, data.description, data.servingQuantity, data.servingUnit, servingGrams, data.proteinG, data.fatG, data.carbohydrateG, data.calories, data.visibility, data.notes)
+    .bind(foodId, user.id, data.description, data.servingQuantity, data.servingUnit, servingGrams, data.proteinG, data.fatG, data.carbohydrateG, data.calories, data.visibility, data.notes, data.barcode)
     .run();
   return json({ ok: true, food: mapFood((await ownFood(ctx, user, foodId))!) });
 }
@@ -823,9 +848,9 @@ async function updateFood(ctx: Ctx, user: DbUser, foodId: string) {
   const servingGrams = requireServingGrams(data.servingQuantity, data.servingUnit, data.servingGrams);
   await assertUniqueFoodDescription(ctx, user, data.description, foodId);
   await ctx.env.DB.prepare(
-    `UPDATE foods SET description = ?, serving_quantity = ?, serving_unit = ?, serving_grams = ?, protein_g = ?, fat_g = ?, carbohydrate_g = ?, calories = ?, visibility = ?, notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?`,
+    `UPDATE foods SET description = ?, serving_quantity = ?, serving_unit = ?, serving_grams = ?, protein_g = ?, fat_g = ?, carbohydrate_g = ?, calories = ?, visibility = ?, notes = ?, barcode = COALESCE(?, barcode), updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_user_id = ?`,
   )
-    .bind(data.description, data.servingQuantity, data.servingUnit, servingGrams, data.proteinG, data.fatG, data.carbohydrateG, data.calories, data.visibility, data.notes, foodId, user.id)
+    .bind(data.description, data.servingQuantity, data.servingUnit, servingGrams, data.proteinG, data.fatG, data.carbohydrateG, data.calories, data.visibility, data.notes, data.barcode, foodId, user.id)
     .run();
   return json({ ok: true, food: mapFood(await ownFood(ctx, user, foodId)) });
 }
@@ -845,10 +870,10 @@ async function copyFood(ctx: Ctx, user: DbUser, foodId: string) {
   const newId = id();
   const servingGrams = source.serving_grams ?? defaultServingGrams(source.serving_quantity, source.serving_unit);
   await ctx.env.DB.prepare(
-    `INSERT INTO foods (id, owner_user_id, description, serving_quantity, serving_unit, serving_grams, protein_g, fat_g, carbohydrate_g, calories, visibility, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO foods (id, owner_user_id, description, serving_quantity, serving_unit, serving_grams, protein_g, fat_g, carbohydrate_g, calories, visibility, notes, barcode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(newId, user.id, source.description, source.serving_quantity, source.serving_unit, servingGrams, source.protein_g, source.fat_g, source.carbohydrate_g, source.calories, visibility, source.notes)
+    .bind(newId, user.id, source.description, source.serving_quantity, source.serving_unit, servingGrams, source.protein_g, source.fat_g, source.carbohydrate_g, source.calories, visibility, source.notes, source.barcode)
     .run();
   return json({ ok: true, food: mapFood(await ownFood(ctx, user, newId)) });
 }
@@ -870,6 +895,9 @@ async function scanFoodLabel(ctx: Ctx, user: DbUser) {
       throw new ApiError('VALIDATION_ERROR', 'That photo is too large. Try a smaller photo.');
     }
   }
+  // From an earlier barcode scan, or a barcode the browser spotted in these photos.
+  const barcode = typeof input.barcode === 'string' ? normalizeBarcode(input.barcode) : null;
+  const productNameHint = optionalString(input.productName);
 
   // Scans that never reached the model don't count toward the limit.
   const used = await ctx.env.DB.prepare(
@@ -930,7 +958,88 @@ async function scanFoodLabel(ctx: Ctx, user: DbUser) {
   }
 
   await finishScan('ok', neurons);
-  return json({ ok: true, draft: labelScanToFoodDraft(reading), scansRemaining: labelScanDailyLimit - usedCount - 1 });
+  const draft = labelScanToFoodDraft({ ...reading, productName: reading.productName ?? productNameHint }, { barcode });
+  return json({
+    ok: true,
+    draft,
+    matches: await findFoodMatches(ctx, user, draft),
+    scansRemaining: labelScanDailyLimit - usedCount - 1,
+  });
+}
+
+// Barcode lookup: foods already in the app first, then Open Food Facts. Returns
+// existing matches and/or a draft; neither means the user should photograph the label.
+async function lookupFoodBarcode(ctx: Ctx, user: DbUser, rawBarcode: string) {
+  const barcode = normalizeBarcode(decodeURIComponent(rawBarcode));
+  if (!barcode) throw new ApiError('VALIDATION_ERROR', "That barcode couldn't be read correctly. Try another photo.");
+
+  const known = await findFoodMatches(ctx, user, null, barcode);
+  if (known.length) return json({ ok: true, barcode, matches: known, draft: null, productName: null });
+
+  const product = await fetchOpenFoodFactsProduct(barcode);
+  const reading = product ? openFoodFactsReading(product) : null;
+  if (!reading) {
+    const productName = product ? openFoodFactsProductName(product) : null;
+    return json({ ok: true, barcode, matches: [], draft: null, productName });
+  }
+  const draft = labelScanToFoodDraft(reading, { barcode, source: 'open-food-facts' });
+  return json({ ok: true, barcode, matches: await findFoodMatches(ctx, user, draft), draft, productName: null });
+}
+
+async function fetchOpenFoodFactsProduct(barcode: string): Promise<OpenFoodFactsProduct | null> {
+  const fields = 'product_name,brands,serving_size,serving_quantity,nutriments';
+  try {
+    const response = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json?fields=${fields}`, {
+      // Open Food Facts asks API users to identify their app.
+      headers: { 'user-agent': 'CalPal/1.0 (https://macros.michaelcoughlin.net)' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { status?: number; product?: OpenFoodFactsProduct };
+    return data.status === 1 && data.product ? data.product : null;
+  } catch {
+    return null;
+  }
+}
+
+// Existing foods the user can see that are probably the scanned product: same barcode,
+// a close name, or (when the label had no name) identical nutrition.
+async function findFoodMatches(ctx: Ctx, user: DbUser, draft: LabelScanDraft | null, barcode = draft?.barcode ?? null) {
+  const scope = visibilityScope('all', user.show_public_foods !== 0, user.id);
+  const select = (where: string, params: unknown[], orderBy = 'description', orderParams: unknown[] = []) =>
+    ctx.env.DB.prepare(`SELECT * FROM foods WHERE archived_at IS NULL AND ${scope.clause} AND ${where} ORDER BY ${orderBy} LIMIT 100`)
+      .bind(...scope.params, ...params, ...orderParams)
+      .all<DbFood>()
+      .then((result) => result.results);
+
+  type Match = { food: DbFood; score: number; matchedBy: 'barcode' | 'name' | 'nutrition' };
+  const byBarcode = barcode ? await select('barcode = ?', [barcode]) : [];
+  const scored: Match[] = byBarcode.map((food) => ({ food, score: 10, matchedBy: 'barcode' }));
+  if (draft) {
+    const tokens = foodNameTokens(draft.description).sort((a, b) => b.length - a.length).slice(0, 4);
+    const likes = tokens.map(() => "lower(description) LIKE ? ESCAPE '\\'");
+    const patterns = tokens.map((token) => `%${escapeLike(token)}%`);
+    const candidates = tokens.length
+      ? // Foods sharing the most name words first.
+        await select(`(${likes.join(' OR ')})`, patterns, `(${likes.join(') + (')}) DESC, description`, patterns)
+      : await select(
+          'calories = ? AND abs(protein_g - ?) < 0.6 AND abs(fat_g - ?) < 0.6 AND abs(carbohydrate_g - ?) < 0.6 AND (? IS NULL OR abs(serving_grams - ?) < 1)',
+          [draft.calories, draft.proteinG, draft.fatG, draft.carbohydrateG, draft.servingGrams, draft.servingGrams],
+        );
+    for (const food of candidates) {
+      if (scored.some((entry) => entry.food.id === food.id)) continue;
+      if (!tokens.length) {
+        scored.push({ food, score: FOOD_MATCH_THRESHOLD, matchedBy: 'nutrition' });
+        continue;
+      }
+      const score = foodMatchScore(draft, mapFood(food));
+      if (score >= FOOD_MATCH_THRESHOLD) scored.push({ food, score, matchedBy: 'name' });
+    }
+  }
+  return scored
+    .sort((a, b) => b.score - a.score || Number(b.food.owner_user_id === user.id) - Number(a.food.owner_user_id === user.id))
+    .slice(0, 3)
+    .map(({ food, matchedBy }) => ({ ...mapFood(food), matchedBy }));
 }
 
 function mapMeal(meal: DbMeal, items: unknown[] = []) {
