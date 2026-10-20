@@ -492,6 +492,7 @@ small { display: block; color: #63716b; margin-top: 4px; }
   }
   .toolbar-cals span { font-size: 10px; font-weight: 700; letter-spacing: 0.01em; }
   .toolbar-cals strong { font-size: 15px; font-variant-numeric: tabular-nums; }
+  .toolbar-cals strong small { font-size: 11px; font-weight: 600; opacity: 0.75; }
   .toolbar-cals.remaining { color: #166534; background: #dcfce7; }
   .toolbar-cals.over { color: #991b1b; background: #fee2e2; }
   .list-row { grid-template-columns: 1fr; }

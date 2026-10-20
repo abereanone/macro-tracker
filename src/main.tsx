@@ -948,7 +948,7 @@ function Dashboard({
     ? [
         `Current goal: ${activeGoal.plan.goal_weight_value} ${activeGoal.plan.goal_weight_unit} by ${activeGoal.plan.target_date}`,
         activeGoal.goalPace
-          ? `Needed average: ${activeGoal.goalPace.direction === "maintain" ? "maintain weight" : `${activeGoal.goalPace.direction} ${round(fromLb(Math.abs(activeGoal.goalPace.weeklyChangeLb), user.preferredWeightUnit), 2)} ${user.preferredWeightUnit}/week`} from ${activeGoal.goalPace.latestWeight.value} ${activeGoal.goalPace.latestWeight.unit} on ${activeGoal.goalPace.latestWeight.date}.`
+          ? `Needed average: ${activeGoal.goalPace.direction === "maintain" ? "maintain weight" : `${activeGoal.goalPace.direction} ${round(fromLb(Math.abs(activeGoal.goalPace.weeklyChangeLb), user.preferredWeightUnit), 2)} ${user.preferredWeightUnit}/week`} from ${activeGoal.goalPace.averageEntryCount > 1 ? `${round(fromLb(activeGoal.goalPace.currentWeightLb, user.preferredWeightUnit), 1)} ${user.preferredWeightUnit} (average of ${activeGoal.goalPace.averageEntryCount} weigh-ins, ${activeGoal.goalPace.averageStart} to ${activeGoal.goalPace.latestWeight.date})` : `${activeGoal.goalPace.latestWeight.value} ${activeGoal.goalPace.latestWeight.unit} on ${activeGoal.goalPace.latestWeight.date}`}.`
           : "Add a current weight to calculate the weekly pace needed.",
       ].join("\n")
     : undefined;
@@ -996,7 +996,10 @@ function Dashboard({
             title={calorieGoalStatus?.text}
           >
             <span>{calorieGoalDelta >= 0 ? "Cals Remaining" : "Cals Over"}</span>
-            <strong>{Math.abs(calorieGoalDelta)}</strong>
+            <strong>
+              {Math.abs(calorieGoalDelta)}
+              <small>/{Math.round(calorieGoal ?? 0)}</small>
+            </strong>
           </div>
         )}
       </div>
@@ -2698,6 +2701,19 @@ function Goals({ user, viewingUser }: { user: User; viewingUser?: FriendUser | n
                     {calculation.dailyAdjustment} ={" "}
                     {calculation.targetCalories} calories/day.
                   </span>
+                  {activePlan.goalPace &&
+                    activePlan.goalPace.averageEntryCount > 1 &&
+                    round(activePlan.goalPace.latestWeight.valueLb, 1) >
+                      activePlan.goalPace.currentWeightLb && (
+                      <span>
+                        Note: this target may be high. Your latest weigh-in (
+                        {fmtLb(activePlan.goalPace.latestWeight.valueLb)} on{" "}
+                        {activePlan.goalPace.latestWeight.date}) is above your
+                        7-day average of{" "}
+                        {fmtLb(activePlan.goalPace.currentWeightLb)}, and the
+                        target is based on the average.
+                      </span>
+                    )}
                   {calculation.unrealistic && (
                     <span className="error-text">
                       This target appears aggressive.

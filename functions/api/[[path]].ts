@@ -1734,7 +1734,14 @@ async function activeGoalPlan(ctx: Ctx, user: DbUser) {
   const latestWeight = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? ORDER BY entry_date DESC LIMIT 1').bind(user.id).first<DbWeight>();
   if (!latestWeight) return json({ ok: true, plan, maintenance, calculation: null, message: 'Add a current weight to calculate target calories.' });
   if (!maintenance) return json({ ok: true, plan, maintenance, calculation: null, message: 'Add a current weight to estimate maintenance calories.' });
-  const latestWeightLb = toLb(latestWeight.weight_value, latestWeight.weight_unit);
+  // Use the 7-day average ending at the latest weigh-in as "current weight" so a
+  // single day's water-weight swing doesn't move the target. With only one entry
+  // in the window this is just the latest weigh-in.
+  const averageStart = addDays(latestWeight.entry_date, -6);
+  const recentWeights = await ctx.env.DB.prepare('SELECT weight_value, weight_unit FROM weight_entries WHERE user_id = ? AND entry_date BETWEEN ? AND ?')
+    .bind(user.id, averageStart, latestWeight.entry_date)
+    .all<DbWeight>();
+  const latestWeightLb = recentWeights.results.reduce((sum, w) => sum + toLb(w.weight_value, w.weight_unit), 0) / recentWeights.results.length;
   const goalWeightLb = toLb(plan.goal_weight_value, plan.goal_weight_unit);
   const daysToTarget = Math.max(
     0,
@@ -1743,6 +1750,9 @@ async function activeGoalPlan(ctx: Ctx, user: DbUser) {
   const weeklyChangeLb = daysToTarget > 0 ? ((goalWeightLb - latestWeightLb) / daysToTarget) * 7 : 0;
   const goalPace = {
     latestWeight: mapWeightPoint(latestWeight),
+    currentWeightLb: Math.round(latestWeightLb * 10) / 10,
+    averageStart,
+    averageEntryCount: recentWeights.results.length,
     daysToTarget,
     weeklyChangeLb: Math.round((weeklyChangeLb + Number.EPSILON) * 100) / 100,
     direction: weeklyChangeLb < 0 ? 'lose' : weeklyChangeLb > 0 ? 'gain' : 'maintain',
