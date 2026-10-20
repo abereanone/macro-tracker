@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   CALORIES_PER_KG,
@@ -10,10 +10,12 @@ import {
   round,
   toLb,
 } from "./shared/calculations";
+import { LABEL_SCAN_MAX_PHOTOS, type LabelScanDraft } from "./shared/labelScan";
 import {
   Activity,
   BarChart3,
   CalendarDays,
+  Camera,
   ChefHat,
   KeyRound,
   LogOut,
@@ -841,6 +843,19 @@ function Dashboard({
   const [foodQuantity, setFoodQuantity] = useState("");
   const [foodQuantityUnit, setFoodQuantityUnit] = useState("g");
   const [addingFood, setAddingFood] = useState(false);
+  const [scan, setScan] = useState<LabelScanDraft | null>(null);
+  // Memoized: FoodForm resets its fields whenever the food object changes.
+  const scannedFood = useMemo(
+    () => (scan ? foodFromScan(scan, user.id) : null),
+    [scan, user.id],
+  );
+  const quantityInputRef = useRef<HTMLInputElement>(null);
+  const [showQuantity, setShowQuantity] = useState(false);
+  useEffect(() => {
+    if (!showQuantity || !quantityInputRef.current) return;
+    quantityInputRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+    setShowQuantity(false);
+  }, [showQuantity, scan]);
   const [activeGoal, setActiveGoal] = useState<any>(null);
   const [popupMessage, setPopupMessage] = useState("");
   const [status, setStatus] = useState("");
@@ -1005,7 +1020,28 @@ function Dashboard({
       </div>
       {!readOnly && (
       <div className="two-col">
-        <Panel title="Log Food">
+        <Panel title={scan ? "Check Scanned Food" : "Log Food"}>
+          {scan ? (
+            <FoodForm
+              food={scannedFood}
+              scan={scan}
+              onSave={async (food) => {
+                setScan(null);
+                setSelectedFood(food);
+                setSelectedMeal(null);
+                setFoodSearch(food.description);
+                setFoodQuantity(String(food.servingQuantity));
+                setFoodQuantityUnit(food.servingUnit);
+                setShowQuantity(true);
+                setPopupMessage(
+                  `${food.description} saved. Check the quantity, then tap Add food.`,
+                );
+              }}
+              onCancel={() => setScan(null)}
+            />
+          ) : (
+          <>
+          <LabelScanner onScanned={setScan} />
           <form
             onSubmit={async (event) => {
               event.preventDefault();
@@ -1127,6 +1163,7 @@ function Dashboard({
             {!selectedMeal && (
               <div className="row">
                 <input
+                  ref={quantityInputRef}
                   name="quantity"
                   type="number"
                   step="0.01"
@@ -1169,6 +1206,8 @@ function Dashboard({
                   : "Add food"}
             </button>
           </form>
+          </>
+          )}
         </Panel>
         <Panel title="Add Saved Meal">
           <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
@@ -1438,6 +1477,7 @@ function Foods({
   const [search, setSearch] = useState("");
   const [message, setMessage] = useState("");
   const [editingFood, setEditingFood] = useState<Food | null>(null);
+  const [scan, setScan] = useState<LabelScanDraft | null>(null);
   const readOnly = Boolean(viewingUser);
   const load = (nextSearch = search, nextScope = scope) =>
     api<{ foods: Food[] }>(
@@ -1451,13 +1491,18 @@ function Foods({
   }, [scope, search, viewingUser?.id]);
   useEffect(() => {
     setEditingFood(null);
+    setScan(null);
     setMessage("");
   }, [viewingUser?.id]);
+  function editFood(food: Food | null, nextScan: LabelScanDraft | null = null) {
+    setEditingFood(food);
+    setScan(nextScan);
+  }
   async function handleFoodSaved(food: Food, action: "added" | "updated") {
     setScope("all");
     setSearch("");
     await load("", "all");
-    setEditingFood(null);
+    editFood(null);
     setMessage(`${food.description} was ${action}.`);
   }
   return (
@@ -1471,11 +1516,20 @@ function Foods({
         showScope={!readOnly}
       />
       {!readOnly && (
-      <Panel title={editingFood ? "Modify Food" : "Add Food"}>
+      <Panel title={editingFood && !scan ? "Modify Food" : "Add Food"}>
+        {!editingFood && (
+          <LabelScanner
+            onScanned={(draft) => {
+              setMessage("");
+              editFood(foodFromScan(draft, user.id), draft);
+            }}
+          />
+        )}
         <FoodForm
           food={editingFood}
+          scan={scan}
           onSave={handleFoodSaved}
-          onCancel={() => setEditingFood(null)}
+          onCancel={() => editFood(null)}
         />
       </Panel>
       )}
@@ -1490,9 +1544,9 @@ function Foods({
               reload={load}
               readOnly={readOnly}
               onCopy={() =>
-                setEditingFood({ ...food, id: "", ownerUserId: user.id })
+                editFood({ ...food, id: "", ownerUserId: user.id })
               }
-              onModify={() => setEditingFood(food)}
+              onModify={() => editFood(food)}
             />
           ))}
         </div>
@@ -1503,13 +1557,16 @@ function Foods({
 
 function FoodForm({
   food,
+  scan,
   onSave,
   onCancel,
 }: {
   food: Food | null;
+  scan?: LabelScanDraft | null;
   onSave: (food: Food, action: "added" | "updated") => Promise<void>;
   onCancel: () => void;
 }) {
+  const descriptionRef = useRef<HTMLInputElement>(null);
   const [description, setDescription] = useState("");
   const [servingQuantity, setServingQuantity] = useState("");
   const [servingUnit, setServingUnit] = useState("g");
@@ -1532,10 +1589,12 @@ function FoodForm({
     macros.proteinG * 4 + macros.fatG * 9 + macros.carbohydrateG * 4,
   );
   const servingGramsRequired = !["g", "oz", "lb", "kg"].includes(servingUnit);
+  const servingUnitOptions = ["g", "oz", "lb", "kg", "tbsp", "cup", "unit", "package"];
+  if (!servingUnitOptions.includes(servingUnit)) servingUnitOptions.push(servingUnit);
 
   useEffect(() => {
     setDescription(food?.description ?? "");
-    setServingQuantity(food ? String(food.servingQuantity) : "");
+    setServingQuantity(food?.servingQuantity ? String(food.servingQuantity) : "");
     setServingUnit(food?.servingUnit ?? "g");
     setServingGrams(food?.servingGrams ? String(food.servingGrams) : "");
     setVisibility(food?.visibility ?? "public");
@@ -1548,6 +1607,7 @@ function FoodForm({
     setCaloriesTouched(Boolean(food));
     setCalorieWarning(null);
     setError("");
+    if (scan && !food?.description) descriptionRef.current?.focus();
   }, [food]);
 
   function updateMacro(field: keyof typeof macros, value: string) {
@@ -1597,6 +1657,7 @@ function FoodForm({
       setDescription("");
       setServingQuantity("");
       setServingUnit("g");
+      setServingGrams("");
       setVisibility("public");
       setMacros({ proteinG: 0, fatG: 0, carbohydrateG: 0 });
       setCalories("");
@@ -1640,9 +1701,22 @@ function FoodForm({
         await saveFood(enteredCalories);
       }}
     >
+      {scan && (
+        <div className="warning-box">
+          <strong>Check these values against the label, then save.</strong>
+          {scan.servingSizeText && (
+            <span>Label serving size: {scan.servingSizeText}</span>
+          )}
+          {!food?.description && <span>Add a name for this food.</span>}
+          {scan.warnings.map((warning) => (
+            <span key={warning}>{warning}</span>
+          ))}
+        </div>
+      )}
       <label className="field">
         <span>Food name</span>
         <input
+          ref={descriptionRef}
           name="description"
           placeholder="enter a food"
           value={description}
@@ -1671,13 +1745,11 @@ function FoodForm({
             onChange={(event) => setServingUnit(event.target.value)}
             required
           >
-            <option value="g">g</option>
-            <option value="oz">oz</option>
-            <option value="lb">lb</option>
-            <option value="kg">kg</option>
-            <option value="tbsp">tbsp</option>
-            <option value="unit">unit</option>
-            <option value="package">package</option>
+            {servingUnitOptions.map((unit) => (
+              <option key={unit} value={unit}>
+                {unit}
+              </option>
+            ))}
           </select>
         </label>
       </div>
@@ -1797,6 +1869,178 @@ function FoodForm({
         )}
       </div>
     </form>
+  );
+}
+
+function foodFromScan(draft: LabelScanDraft, ownerUserId: string): Food {
+  return {
+    id: "",
+    ownerUserId,
+    description: draft.description,
+    servingQuantity: draft.servingQuantity ?? 0,
+    servingUnit: draft.servingUnit,
+    servingGrams: draft.servingGrams,
+    proteinG: draft.proteinG,
+    fatG: draft.fatG,
+    carbohydrateG: draft.carbohydrateG,
+    calories: draft.calories,
+    visibility: "public",
+  };
+}
+
+// Shrinks a phone photo before upload: a 1600px JPEG keeps label text legible at a
+// fraction of the original size.
+async function photoToDataUrl(file: File, maxEdge = 1600): Promise<string> {
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error("That photo couldn't be opened. Try a JPEG or PNG photo.");
+  }
+  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return canvas.toDataURL("image/jpeg", 0.85);
+}
+
+function LabelScanner({
+  onScanned,
+}: {
+  onScanned: (draft: LabelScanDraft) => void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [photos, setPhotos] = useState<string[]>([]);
+  const [preparing, setPreparing] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [error, setError] = useState("");
+  const canAddPhoto = photos.length < LABEL_SCAN_MAX_PHOTOS && !scanning;
+
+  async function addPhotos(files: FileList | null) {
+    if (!files?.length) return;
+    setError("");
+    setPreparing(true);
+    try {
+      const room = LABEL_SCAN_MAX_PHOTOS - photos.length;
+      const prepared = await Promise.all(
+        Array.from(files).slice(0, room).map((file) => photoToDataUrl(file)),
+      );
+      setPhotos((current) =>
+        [...current, ...prepared].slice(0, LABEL_SCAN_MAX_PHOTOS),
+      );
+      if (files.length > room) {
+        setError(`Only ${LABEL_SCAN_MAX_PHOTOS} photos can be used per scan.`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "That photo couldn't be opened.");
+    } finally {
+      setPreparing(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function readLabel() {
+    setError("");
+    setScanning(true);
+    try {
+      const result = await api<{ draft: LabelScanDraft }>("/foods/scan-label", {
+        method: "POST",
+        body: JSON.stringify({ photos }),
+      });
+      setPhotos([]);
+      onScanned(result.draft);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The label couldn't be read.");
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  return (
+    <div className="label-scanner">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(event) => void addPhotos(event.target.files)}
+      />
+      {photos.length === 0 ? (
+        <>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={preparing}
+          >
+            <Camera size={16} />{" "}
+            {preparing ? "Opening photo..." : "Scan nutrition label"}
+          </button>
+          <small>
+            Take a photo of the Nutrition Facts label. You can add a second
+            photo of the front of the package for the product name.
+          </small>
+        </>
+      ) : (
+        <>
+          <div className="label-scanner-photos">
+            {photos.map((photo, index) => (
+              <div key={index} className="label-scanner-photo">
+                <img src={photo} alt={`Label photo ${index + 1}`} />
+                {!scanning && (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() =>
+                      setPhotos((current) => current.filter((_, i) => i !== index))
+                    }
+                    aria-label={`Remove photo ${index + 1}`}
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="form-actions">
+            <button type="button" onClick={readLabel} disabled={scanning || preparing}>
+              {scanning ? "Reading label..." : "Read label"}
+            </button>
+            {canAddPhoto && (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={preparing}
+              >
+                <Camera size={16} /> {preparing ? "Opening photo..." : "Add photo"}
+              </button>
+            )}
+            {!scanning && (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => {
+                  setPhotos([]);
+                  setError("");
+                }}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+          {photos.length < LABEL_SCAN_MAX_PHOTOS && !scanning && (
+            <small>
+              Product name not on the label? Add a photo of the front of the
+              package.
+            </small>
+          )}
+        </>
+      )}
+      {error && <p className="error-text">{error}</p>}
+    </div>
   );
 }
 

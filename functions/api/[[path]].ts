@@ -1,5 +1,6 @@
 import { GOAL_WEIGHT_CALORIE_MULTIPLIER, calendarDaysInclusive, calculateFallbackGoalCalories, calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, estimateMaintenanceFromRecentWindow, estimateMaintenanceFromWeeklyAverages, toLb } from '../../src/shared/calculations';
 import { Resend } from 'resend';
+import { LABEL_SCAN_MAX_PHOTOS, labelScanHasNutrition, labelScanPrompt, labelScanToFoodDraft, parseLabelScanReading } from '../../src/shared/labelScan';
 import {
   nonNegativeNumber,
   normalizeEmail,
@@ -12,7 +13,12 @@ import {
   requireWeightUnit,
 } from '../../src/shared/validation';
 
-type Env = { DB: D1Database; RESEND_API_KEY: string; DEV_AUTH_BYPASS?: string };
+type Env = {
+  DB: D1Database;
+  AI: { run(model: string, inputs: Record<string, unknown>): Promise<unknown> };
+  RESEND_API_KEY: string;
+  DEV_AUTH_BYPASS?: string;
+};
 type Ctx = EventContext<Env, string, { path?: string[] }>;
 type DbUser = {
   id: string;
@@ -81,78 +87,88 @@ const friendInviteExpiresMs = 14 * 24 * 60 * 60 * 1000;
 const maintenanceLookbackDays = 14;
 const minimumLoggedDaysForEstimate = 10;
 const maxLoginAttempts = 5;
+// Free on the Workers AI free plan; about 5 Neurons per scan.
+const labelScanModel = '@cf/google/gemma-4-26b-a4b-it';
+const labelScanDailyLimit = 20;
+const labelScanMaxPhotoChars = 4_000_000;
 
 export const onRequest: PagesFunction<Env> = async (ctx) => {
   try {
-    const url = new URL(ctx.request.url);
-    const segments = (ctx.params.path ?? []) as string[];
-    const path = `/${segments.join('/')}`;
-    const method = ctx.request.method.toUpperCase();
-
-    if (method === 'OPTIONS') return json({ ok: true });
-    if (method === 'POST' && path === '/auth/request-code') return requestLoginCode(ctx);
-    if (method === 'POST' && path === '/auth/verify-code') return verifyLoginCode(ctx);
-    if (method === 'GET' && path === '/auth/dev-users') return listDevUsers(ctx);
-    if (method === 'POST' && path === '/auth/dev-login') return devLogin(ctx);
-    if (method === 'POST' && path === '/auth/logout') return logout(ctx);
-
-    const user = await requireUser(ctx);
-
-    if (method === 'GET' && path === '/me') return json({ ok: true, user: mapUser(user) });
-    if (method === 'GET' && path === '/me/settings') return getSettings(await readableUser(ctx, user, url));
-    if (method === 'PUT' && path === '/me/settings') return updateSettings(ctx, user);
-    if (method === 'POST' && path === '/me/delete-data') return deleteMyData(ctx, user);
-    if (path === '/help-dismissals' && method === 'GET') return listHelpDismissals(ctx, user);
-    if (path === '/help-dismissals' && method === 'POST') return dismissHelp(ctx, user);
-
-    if (path === '/friends' && method === 'GET') return listFriends(ctx, user);
-    if (segments[0] === 'friends' && segments[1] && method === 'DELETE') return removeFriendAccess(ctx, user, segments[1]);
-    if (path === '/friend-invites' && method === 'POST') return createFriendInvite(ctx, user, url);
-    if (path === '/friend-invites/accept' && method === 'POST') return acceptFriendInvite(ctx, user);
-    if (segments[0] === 'friend-invites' && segments[1] && method === 'DELETE') return revokeFriendInvite(ctx, user, segments[1]);
-
-    if (path === '/foods' && method === 'GET') return listFoods(ctx, await readableUser(ctx, user, url), url);
-    if (path === '/foods' && method === 'POST') return createFood(ctx, user);
-    if (segments[0] === 'foods' && segments[1] && method === 'PUT') return updateFood(ctx, user, segments[1]);
-    if (segments[0] === 'foods' && segments[1] && method === 'DELETE') return archiveFood(ctx, user, segments[1]);
-    if (segments[0] === 'foods' && segments[1] && segments[2] === 'copy' && method === 'POST') return copyFood(ctx, user, segments[1]);
-
-    if (path === '/saved-meals' && method === 'GET') return listMeals(ctx, await readableUser(ctx, user, url), url);
-    if (path === '/saved-meals' && method === 'POST') return createMeal(ctx, user);
-    if (segments[0] === 'saved-meals' && segments[1] && method === 'PUT') return updateMeal(ctx, user, segments[1]);
-    if (segments[0] === 'saved-meals' && segments[1] && method === 'DELETE') return archiveMeal(ctx, user, segments[1]);
-    if (segments[0] === 'saved-meals' && segments[1] && segments[2] === 'copy' && method === 'POST') return copyMeal(ctx, user, segments[1]);
-    if (segments[0] === 'saved-meals' && segments[1] && segments[2] === 'add-to-diary' && method === 'POST') return addMealToDiary(ctx, user, segments[1]);
-
-    if (segments[0] === 'days' && segments[1] && method === 'GET') return getDay(ctx, await readableUser(ctx, user, url), segments[1]);
-    if (path === '/diary-items' && method === 'POST') return createDiaryItem(ctx, user);
-    if (segments[0] === 'diary-items' && segments[1] && method === 'PUT') return updateDiaryItem(ctx, user, segments[1]);
-    if (segments[0] === 'diary-items' && segments[1] && method === 'DELETE') return deleteDiaryItem(ctx, user, segments[1]);
-    if (segments[0] === 'diary-groups' && segments[1] && method === 'DELETE') return deleteDiaryGroup(ctx, user, segments[1]);
-
-    if (path === '/weight' && method === 'GET') return listWeight(ctx, await readableUser(ctx, user, url), url);
-    if (path === '/weight' && method === 'POST') return upsertWeight(ctx, user);
-    if (segments[0] === 'weight' && segments[1] && method === 'PUT') return updateWeight(ctx, user, segments[1]);
-    if (segments[0] === 'weight' && segments[1] && method === 'DELETE') return deleteWeight(ctx, user, segments[1]);
-
-    if (path === '/reports/summary' && method === 'GET') return reportSummary(ctx, await readableUser(ctx, user, url), url);
-    if (path === '/reports/maintenance' && method === 'GET') return reportMaintenance(ctx, await readableUser(ctx, user, url), url);
-    if (path === '/reports/two-week-weight-loss' && method === 'GET') return reportTwoWeekWeightLoss(ctx, await readableUser(ctx, user, url));
-    if (path === '/daily-goals' && method === 'GET') return listDailyGoals(ctx, await readableUser(ctx, user, url));
-    if (path === '/daily-goals' && method === 'PUT') return updateDailyGoals(ctx, user);
-    if (path === '/daily-goal-completions' && method === 'POST') return setDailyGoalCompletion(ctx, user);
-    if (path === '/goal-plans' && method === 'POST') return createGoalPlan(ctx, user);
-    if (path === '/goal-plans' && method === 'GET') return listGoalPlans(ctx, user, url);
-    if (path === '/goal-plans/active' && method === 'GET') return activeGoalPlan(ctx, await readableUser(ctx, user, url));
-    if (segments[0] === 'goal-plans' && segments[1] && method === 'PUT') return archiveGoalPlan(ctx, user, segments[1]);
-
-    return error('NOT_FOUND', 'Route not found.', 404);
+    // Awaited so errors thrown inside route handlers are caught here and returned as JSON.
+    return await route(ctx);
   } catch (err) {
     if (err instanceof ApiError) return error(err.code, err.message, err.status);
     const message = err instanceof Error ? err.message : 'Unexpected server error.';
     return error('SERVER_ERROR', message, 500);
   }
 };
+
+async function route(ctx: Ctx) {
+  const url = new URL(ctx.request.url);
+  const segments = (ctx.params.path ?? []) as string[];
+  const path = `/${segments.join('/')}`;
+  const method = ctx.request.method.toUpperCase();
+
+  if (method === 'OPTIONS') return json({ ok: true });
+  if (method === 'POST' && path === '/auth/request-code') return requestLoginCode(ctx);
+  if (method === 'POST' && path === '/auth/verify-code') return verifyLoginCode(ctx);
+  if (method === 'GET' && path === '/auth/dev-users') return listDevUsers(ctx);
+  if (method === 'POST' && path === '/auth/dev-login') return devLogin(ctx);
+  if (method === 'POST' && path === '/auth/logout') return logout(ctx);
+
+  const user = await requireUser(ctx);
+
+  if (method === 'GET' && path === '/me') return json({ ok: true, user: mapUser(user) });
+  if (method === 'GET' && path === '/me/settings') return getSettings(await readableUser(ctx, user, url));
+  if (method === 'PUT' && path === '/me/settings') return updateSettings(ctx, user);
+  if (method === 'POST' && path === '/me/delete-data') return deleteMyData(ctx, user);
+  if (path === '/help-dismissals' && method === 'GET') return listHelpDismissals(ctx, user);
+  if (path === '/help-dismissals' && method === 'POST') return dismissHelp(ctx, user);
+
+  if (path === '/friends' && method === 'GET') return listFriends(ctx, user);
+  if (segments[0] === 'friends' && segments[1] && method === 'DELETE') return removeFriendAccess(ctx, user, segments[1]);
+  if (path === '/friend-invites' && method === 'POST') return createFriendInvite(ctx, user, url);
+  if (path === '/friend-invites/accept' && method === 'POST') return acceptFriendInvite(ctx, user);
+  if (segments[0] === 'friend-invites' && segments[1] && method === 'DELETE') return revokeFriendInvite(ctx, user, segments[1]);
+
+  if (path === '/foods' && method === 'GET') return listFoods(ctx, await readableUser(ctx, user, url), url);
+  if (path === '/foods' && method === 'POST') return createFood(ctx, user);
+  if (path === '/foods/scan-label' && method === 'POST') return scanFoodLabel(ctx, user);
+  if (segments[0] === 'foods' && segments[1] && method === 'PUT') return updateFood(ctx, user, segments[1]);
+  if (segments[0] === 'foods' && segments[1] && method === 'DELETE') return archiveFood(ctx, user, segments[1]);
+  if (segments[0] === 'foods' && segments[1] && segments[2] === 'copy' && method === 'POST') return copyFood(ctx, user, segments[1]);
+
+  if (path === '/saved-meals' && method === 'GET') return listMeals(ctx, await readableUser(ctx, user, url), url);
+  if (path === '/saved-meals' && method === 'POST') return createMeal(ctx, user);
+  if (segments[0] === 'saved-meals' && segments[1] && method === 'PUT') return updateMeal(ctx, user, segments[1]);
+  if (segments[0] === 'saved-meals' && segments[1] && method === 'DELETE') return archiveMeal(ctx, user, segments[1]);
+  if (segments[0] === 'saved-meals' && segments[1] && segments[2] === 'copy' && method === 'POST') return copyMeal(ctx, user, segments[1]);
+  if (segments[0] === 'saved-meals' && segments[1] && segments[2] === 'add-to-diary' && method === 'POST') return addMealToDiary(ctx, user, segments[1]);
+
+  if (segments[0] === 'days' && segments[1] && method === 'GET') return getDay(ctx, await readableUser(ctx, user, url), segments[1]);
+  if (path === '/diary-items' && method === 'POST') return createDiaryItem(ctx, user);
+  if (segments[0] === 'diary-items' && segments[1] && method === 'PUT') return updateDiaryItem(ctx, user, segments[1]);
+  if (segments[0] === 'diary-items' && segments[1] && method === 'DELETE') return deleteDiaryItem(ctx, user, segments[1]);
+  if (segments[0] === 'diary-groups' && segments[1] && method === 'DELETE') return deleteDiaryGroup(ctx, user, segments[1]);
+
+  if (path === '/weight' && method === 'GET') return listWeight(ctx, await readableUser(ctx, user, url), url);
+  if (path === '/weight' && method === 'POST') return upsertWeight(ctx, user);
+  if (segments[0] === 'weight' && segments[1] && method === 'PUT') return updateWeight(ctx, user, segments[1]);
+  if (segments[0] === 'weight' && segments[1] && method === 'DELETE') return deleteWeight(ctx, user, segments[1]);
+
+  if (path === '/reports/summary' && method === 'GET') return reportSummary(ctx, await readableUser(ctx, user, url), url);
+  if (path === '/reports/maintenance' && method === 'GET') return reportMaintenance(ctx, await readableUser(ctx, user, url), url);
+  if (path === '/reports/two-week-weight-loss' && method === 'GET') return reportTwoWeekWeightLoss(ctx, await readableUser(ctx, user, url));
+  if (path === '/daily-goals' && method === 'GET') return listDailyGoals(ctx, await readableUser(ctx, user, url));
+  if (path === '/daily-goals' && method === 'PUT') return updateDailyGoals(ctx, user);
+  if (path === '/daily-goal-completions' && method === 'POST') return setDailyGoalCompletion(ctx, user);
+  if (path === '/goal-plans' && method === 'POST') return createGoalPlan(ctx, user);
+  if (path === '/goal-plans' && method === 'GET') return listGoalPlans(ctx, user, url);
+  if (path === '/goal-plans/active' && method === 'GET') return activeGoalPlan(ctx, await readableUser(ctx, user, url));
+  if (segments[0] === 'goal-plans' && segments[1] && method === 'PUT') return archiveGoalPlan(ctx, user, segments[1]);
+
+  return error('NOT_FOUND', 'Route not found.', 404);
+}
 
 class ApiError extends Error {
   constructor(public code: string, message: string, public status = 400) {
@@ -658,6 +674,7 @@ async function deleteMyData(ctx: Ctx, user: DbUser) {
        )`,
     ).bind(user.id),
     ctx.env.DB.prepare("DELETE FROM foods WHERE owner_user_id = ? AND visibility = 'private'").bind(user.id),
+    ctx.env.DB.prepare('DELETE FROM label_scans WHERE user_id = ?').bind(user.id),
   ]);
 
   return json({ ok: true });
@@ -834,6 +851,86 @@ async function copyFood(ctx: Ctx, user: DbUser, foodId: string) {
     .bind(newId, user.id, source.description, source.serving_quantity, source.serving_unit, servingGrams, source.protein_g, source.fat_g, source.carbohydrate_g, source.calories, visibility, source.notes)
     .run();
   return json({ ok: true, food: mapFood(await ownFood(ctx, user, newId)) });
+}
+
+// Reads one or two label photos (label, plus optionally the front of the package)
+// and returns a food draft for the user to check. Nothing is saved except a usage
+// row for the daily limit; the photos are discarded.
+async function scanFoodLabel(ctx: Ctx, user: DbUser) {
+  const input = await body(ctx);
+  const photos = Array.isArray(input.photos) ? input.photos : [];
+  if (photos.length < 1 || photos.length > LABEL_SCAN_MAX_PHOTOS) {
+    throw new ApiError('VALIDATION_ERROR', `Add 1 or ${LABEL_SCAN_MAX_PHOTOS} photos.`);
+  }
+  for (const photo of photos) {
+    if (typeof photo !== 'string' || !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(photo)) {
+      throw new ApiError('VALIDATION_ERROR', 'Photos must be JPEG, PNG, or WebP images.');
+    }
+    if (photo.length > labelScanMaxPhotoChars) {
+      throw new ApiError('VALIDATION_ERROR', 'That photo is too large. Try a smaller photo.');
+    }
+  }
+
+  // Scans that never reached the model don't count toward the limit.
+  const used = await ctx.env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM label_scans WHERE user_id = ? AND created_at > ? AND status != 'unavailable'",
+  )
+    .bind(user.id, new Date(Date.now() - 86_400_000).toISOString())
+    .first<{ count: number }>();
+  const usedCount = used?.count ?? 0;
+  if (usedCount >= labelScanDailyLimit) {
+    throw new ApiError('RATE_LIMITED', `You've used all ${labelScanDailyLimit} label scans for the last 24 hours. Enter this food by hand for now.`, 429);
+  }
+
+  const scanId = id();
+  await ctx.env.DB.prepare('INSERT INTO label_scans (id, user_id, photo_count, status, created_at) VALUES (?, ?, ?, ?, ?)')
+    .bind(scanId, user.id, photos.length, 'pending', nowIso())
+    .run();
+  const finishScan = (status: string, neurons: number | null = null) =>
+    ctx.env.DB.prepare('UPDATE label_scans SET status = ?, neurons = ? WHERE id = ?').bind(status, neurons, scanId).run();
+
+  let output: unknown;
+  try {
+    output = await ctx.env.AI.run(labelScanModel, {
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: labelScanPrompt }, ...photos.map((url) => ({ type: 'image_url', image_url: { url } }))],
+        },
+      ],
+      response_format: { type: 'json_object' },
+      chat_template_kwargs: { enable_thinking: false },
+      max_completion_tokens: 500,
+      temperature: 0,
+    });
+  } catch (err) {
+    await finishScan('unavailable');
+    const message = err instanceof Error ? err.message : String(err);
+    // 3036: the account's free daily Neurons are used up.
+    throw new ApiError(
+      'SCAN_UNAVAILABLE',
+      message.includes('3036')
+        ? 'Label scanning has reached its free limit for today. Enter this food by hand, or try again tomorrow.'
+        : 'Label scanning is unavailable right now. Try again in a minute, or enter the food by hand.',
+      503,
+    );
+  }
+
+  const result = output as { choices?: { message?: { content?: unknown } }[]; response?: unknown; usage?: { neurons?: number } };
+  const content = result.choices?.[0]?.message?.content ?? result.response;
+  const neurons = typeof result.usage?.neurons === 'number' ? result.usage.neurons : null;
+  const reading = parseLabelScanReading(typeof content === 'string' ? content : JSON.stringify(content ?? ''));
+  if (!reading || !reading.readable || !labelScanHasNutrition(reading)) {
+    await finishScan('unreadable', neurons);
+    throw new ApiError(
+      'SCAN_UNREADABLE',
+      "Couldn't read a nutrition label in that photo. Try a closer, well-lit, straight-on photo of the Nutrition Facts panel.",
+      422,
+    );
+  }
+
+  await finishScan('ok', neurons);
+  return json({ ok: true, draft: labelScanToFoodDraft(reading), scansRemaining: labelScanDailyLimit - usedCount - 1 });
 }
 
 function mapMeal(meal: DbMeal, items: unknown[] = []) {

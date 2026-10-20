@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A macro/nutrition tracker: React + TypeScript + Vite frontend, Cloudflare Pages Functions (TypeScript) backend, Cloudflare D1 (SQLite) database. Features: food database, diary logging, saved meals, body weight tracking, estimated maintenance calories, goal weight planner, and daily habit goals.
+A macro/nutrition tracker: React + TypeScript + Vite frontend, Cloudflare Pages Functions (TypeScript) backend, Cloudflare D1 (SQLite) database. Features: food database, diary logging, saved meals, body weight tracking, estimated maintenance calories, goal weight planner, daily habit goals, and nutrition label scanning.
 
 ## Commands
 
@@ -31,7 +31,7 @@ Frontend changes under `src/`, `public/`, Vite config, or dependencies require `
 
 **Backend** (`functions/api/[[path]].ts`): Single Cloudflare Pages Function handling all API routes via path/method dispatch at the top of `onRequest`. No framework — typed with `@cloudflare/workers-types`. All D1 access uses prepared statements.
 
-**Shared code** (`src/shared/`): `calculations.ts`, `types.ts`, and `validation.ts` are imported by **both** the frontend and the API worker. Changes here affect both sides and may require a rebuild.
+**Shared code** (`src/shared/`): `calculations.ts`, `labelScan.ts`, `types.ts`, and `validation.ts` are imported by **both** the frontend and the API worker. Changes here affect both sides and may require a rebuild.
 
 **Database**: Cloudflare D1 bound as `ctx.env.DB`. Migrations in `migrations/`. Soft deletes via `archived_at`. Timestamps as ISO strings.
 
@@ -43,6 +43,7 @@ Frontend changes under `src/`, `public/`, Vite config, or dependencies require `
 - Maintenance calorie estimation requires at least 2 weight entries and at least 7 logged food days between them. Falls back to `weight_lb × 10` until enough data exists.
 - `calorie_goal_type` is either `'manual'` (user-set value) or `'goal-based'` (derived from the active goal plan's `calculateGoalTarget` result).
 - `daily_goal_definitions` are seeded with defaults on first access via `ensureDailyGoalDefaults`.
+- Label scanning (`POST /api/foods/scan-label`) sends 1–2 photos to Workers AI (`env.AI`, Gemma 4 26B, free plan) and returns a food draft; nothing is saved until the user submits the food form. Photos are not stored. `label_scans` logs each attempt for the per-user limit (20 per rolling 24 hours). The AI binding always calls Cloudflare, even in local `preview`, and counts against the account's 10,000 free Neurons per day (~10 per scan).
 
 ## Auth
 
@@ -55,4 +56,4 @@ In `.dev.vars` (see `.dev.vars.example`):
 
 ## Tests
 
-`tests/calculations.test.ts` covers `src/shared/calculations.ts`. Run with `npm test`. No API or component tests.
+`tests/calculations.test.ts` covers `src/shared/calculations.ts`; `tests/labelScan.test.ts` covers label-scan parsing and serving mapping in `src/shared/labelScan.ts`. Run with `npm test`. No API or component tests.

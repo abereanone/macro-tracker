@@ -7,3 +7,6 @@ binding = "DB"
 database_name = "macro_tracker"
 database_id = "223777fd-5e2a-4181-a3be-4f943416f876"
 preview_database_id = "macro_tracker"
+
+[ai]
+binding = "AI"

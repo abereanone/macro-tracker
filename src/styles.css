@@ -542,3 +542,26 @@ small { display: block; color: #63716b; margin-top: 4px; }
   color: #15803d;
   background: #dcfce7;
 }
+
+.label-scanner { display: grid; gap: 8px; margin-bottom: 16px; justify-items: start; }
+.label-scanner small { margin-top: 0; }
+.label-scanner .error-text { margin: 0; }
+.label-scanner-photos { display: flex; gap: 10px; flex-wrap: wrap; }
+.label-scanner-photo { position: relative; width: 84px; height: 84px; }
+.label-scanner-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border: 1px solid #dde4df;
+  border-radius: 8px;
+}
+.label-scanner-photo button {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid #cbd6d1;
+}
