@@ -51,6 +51,7 @@ type User = {
   timezone: string;
   showPublicFoods: boolean;
   showPublicMeals: boolean;
+  showMealLabels: boolean;
 };
 type Food = {
   id: string;
@@ -844,6 +845,9 @@ function Dashboard({
   const [foods, setFoods] = useState<Food[]>([]);
   const [meals, setMeals] = useState<SavedMeal[]>([]);
   const [mealLabel, setMealLabel] = useState("Other");
+  useEffect(() => {
+    if (!user.showMealLabels) setMealLabel("Other");
+  }, [user.showMealLabels]);
   const [foodSearch, setFoodSearch] = useState("");
   const [mealResults, setMealResults] = useState<SavedMeal[]>([]);
   const [selectedFood, setSelectedFood] = useState<Food | null>(null);
@@ -1217,7 +1221,9 @@ function Dashboard({
                 Logs all {selectedMeal.items.length} foods in this meal.
               </small>
             )}
-            <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
+            {user.showMealLabels && (
+              <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
+            )}
             <button disabled={selectedMeal ? !canAddMeal : !canAddFood}>
               <Plus size={16} />{" "}
               {addingFood
@@ -1231,7 +1237,9 @@ function Dashboard({
           )}
         </Panel>
         <Panel title="Add Saved Meal">
-          <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
+          {user.showMealLabels && (
+            <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
+          )}
           <div className="list compact">
             {meals.map((meal) => (
               <button key={meal.id} onClick={() => addSavedMeal(meal)}>
@@ -1377,8 +1385,13 @@ function Dashboard({
                   <span>
                     <strong>{item.foodDescription}</strong>
                     <small>
-                      {item.meal_label ?? "Other"} · {item.quantity}
-                      {item.quantity_unit}
+                      {user.showMealLabels &&
+                        `${item.meal_label ?? "Other"} · `}
+                      <DiaryQuantity
+                        item={item}
+                        readOnly={readOnly}
+                        onSaved={load}
+                      />
                     </small>
                   </span>
                   <span>
@@ -1406,14 +1419,20 @@ function Dashboard({
                     <ChefHat size={14} /> {row.name}
                   </strong>
                   <small>
-                    {row.label} · saved meal · {row.items.length} items
+                    {user.showMealLabels && `${row.label} · `}saved meal ·{" "}
+                    {row.items.length} items
                   </small>
                   <div className="diary-meal-items">
                     {row.items.map((item: any) => (
                       <div className="diary-meal-item" key={item.id}>
                         <small>
-                          {item.foodDescription} · {item.quantity}
-                          {item.quantity_unit} · {Math.round(item.calories)}cal
+                          {item.foodDescription} ·{" "}
+                          <DiaryQuantity
+                            item={item}
+                            readOnly={readOnly}
+                            onSaved={load}
+                          />{" "}
+                          · {Math.round(item.calories)}cal
                         </small>
                         {!readOnly && (
                           <button
@@ -1453,6 +1472,97 @@ function Dashboard({
       </Panel>
       {status && <p>{status}</p>}
     </section>
+  );
+}
+
+// Shows a diary entry's quantity with an inline edit. The API recalculates the
+// stored nutrients from the food's current serving data when the quantity changes.
+function DiaryQuantity({
+  item,
+  readOnly,
+  onSaved,
+}: {
+  item: any;
+  readOnly: boolean;
+  onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(item.quantity));
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api(`/diary-items/${item.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          eatenDate: item.eaten_date,
+          mealLabel: item.meal_label,
+          quantity: Number(value),
+          quantityUnit: item.quantity_unit,
+          notes: item.notes,
+        }),
+      });
+      setEditing(false);
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (!editing) {
+    return (
+      <>
+        {item.quantity}
+        {item.quantity_unit}
+        {!readOnly && (
+          <button
+            type="button"
+            className="ghost"
+            style={{ minHeight: 22, padding: "0 6px", marginLeft: 6, fontSize: 12 }}
+            onClick={() => {
+              setValue(String(item.quantity));
+              setEditing(true);
+            }}
+          >
+            Edit
+          </button>
+        )}
+      </>
+    );
+  }
+  return (
+    <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+      <input
+        type="number"
+        inputMode="decimal"
+        min="0"
+        step="any"
+        autoFocus
+        value={value}
+        style={{ width: 80, minHeight: 26 }}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && Number(value) > 0 && !saving) save();
+          if (event.key === "Escape") setEditing(false);
+        }}
+      />
+      {item.quantity_unit}
+      <button
+        type="button"
+        style={{ minHeight: 26, padding: "0 8px", fontSize: 12 }}
+        disabled={!(Number(value) > 0) || saving}
+        onClick={save}
+      >
+        Save
+      </button>
+      <button
+        type="button"
+        className="ghost"
+        style={{ minHeight: 26, padding: "0 8px", fontSize: 12 }}
+        onClick={() => setEditing(false)}
+      >
+        Cancel
+      </button>
+    </span>
   );
 }
 
@@ -3398,6 +3508,7 @@ type SettingsForm = {
   timezone: string;
   showPublicFoods: boolean;
   showPublicMeals: boolean;
+  showMealLabels: boolean;
 };
 
 function getSettingsForm(user: User): SettingsForm {
@@ -3412,6 +3523,7 @@ function getSettingsForm(user: User): SettingsForm {
     timezone: user.timezone ?? "America/New_York",
     showPublicFoods: user.showPublicFoods,
     showPublicMeals: user.showPublicMeals,
+    showMealLabels: user.showMealLabels,
   };
 }
 
@@ -3566,6 +3678,7 @@ function SettingsPage({
             timezone: settingsForm.timezone,
             showPublicFoods: settingsForm.showPublicFoods,
             showPublicMeals: settingsForm.showPublicMeals,
+            showMealLabels: settingsForm.showMealLabels,
           }),
         });
         setUser(res.user);
@@ -3740,6 +3853,18 @@ function SettingsPage({
               }
             />
             <span>Show other users' public meals</span>
+          </label>
+          <label className="field checkbox-field">
+            <input
+              type="checkbox"
+              name="showMealLabels"
+              checked={settingsForm.showMealLabels}
+              disabled={readOnly}
+              onChange={(event) =>
+                updateSettingsField("showMealLabels", event.target.checked)
+              }
+            />
+            <span>Label diary entries as Breakfast, Lunch, Dinner, or Snack</span>
           </label>
         </Panel>
         <Panel title="Daily Goals | Customize the goals you want to track in your diary.">

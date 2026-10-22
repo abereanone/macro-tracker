@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN show_meal_labels INTEGER NOT NULL DEFAULT 0;

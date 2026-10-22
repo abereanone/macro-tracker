@@ -46,6 +46,7 @@ type DbUser = {
   timezone: string | null;
   show_public_foods: number;
   show_public_meals: number;
+  show_meal_labels: number;
 };
 type DbSession = { user_id: string };
 type DbFood = {
@@ -456,6 +457,7 @@ function mapUser(user: DbUser) {
     timezone: user.timezone ?? 'America/New_York',
     showPublicFoods: user.show_public_foods !== 0,
     showPublicMeals: Boolean(user.show_public_meals),
+    showMealLabels: Boolean(user.show_meal_labels),
   };
 }
 
@@ -654,10 +656,11 @@ async function updateSettings(ctx: Ctx, user: DbUser) {
   const timezone = typeof input.timezone === 'string' && input.timezone.trim() ? input.timezone.trim() : 'America/New_York';
   const showPublicFoods = input.showPublicFoods === undefined ? user.show_public_foods : input.showPublicFoods ? 1 : 0;
   const showPublicMeals = input.showPublicMeals === undefined ? user.show_public_meals : input.showPublicMeals ? 1 : 0;
+  const showMealLabels = input.showMealLabels === undefined ? user.show_meal_labels : input.showMealLabels ? 1 : 0;
   await ctx.env.DB.prepare(
-    'UPDATE users SET first_name = ?, last_name = ?, protein_goal_g = ?, calorie_goal_value = ?, calorie_goal_type = ?, preferred_weight_unit = ?, timezone = ?, show_public_foods = ?, show_public_meals = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    'UPDATE users SET first_name = ?, last_name = ?, protein_goal_g = ?, calorie_goal_value = ?, calorie_goal_type = ?, preferred_weight_unit = ?, timezone = ?, show_public_foods = ?, show_public_meals = ?, show_meal_labels = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
   )
-    .bind(firstName, lastName, proteinGoal, calorieGoalValue, calorieGoalType, unit, timezone, showPublicFoods, showPublicMeals, user.id)
+    .bind(firstName, lastName, proteinGoal, calorieGoalValue, calorieGoalType, unit, timezone, showPublicFoods, showPublicMeals, showMealLabels, user.id)
     .run();
   const updated = await ctx.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first<DbUser>();
   return json({ ok: true, user: mapUser(updated!) });
