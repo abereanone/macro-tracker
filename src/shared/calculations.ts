@@ -352,3 +352,52 @@ export const GOAL_WEIGHT_CALORIE_MULTIPLIER = 11;
 export function calculateFallbackGoalCalories(goalWeightLb: number): number {
   return Math.round(goalWeightLb * GOAL_WEIGHT_CALORIE_MULTIPLIER);
 }
+
+// A maintain plan has no end date. Each day the goal is derived from a rolling
+// horizon instead: within tolerance of the maintain weight, eat at maintenance;
+// outside it, correct back over at least MAINTAIN_HORIZON_DAYS, stretching the
+// horizon so the daily adjustment never exceeds MAINTAIN_MAX_DAILY_ADJUSTMENT.
+export const MAINTAIN_TOLERANCE_FRACTION = 0.015;
+export const MAINTAIN_HORIZON_DAYS = 28;
+export const MAINTAIN_MAX_DAILY_ADJUSTMENT = 500;
+
+export function maintainToleranceLb(averageWeightLb: number): number {
+  return averageWeightLb * MAINTAIN_TOLERANCE_FRACTION;
+}
+
+export function calculateMaintainTarget(input: {
+  currentWeightLb: number;
+  maintainWeightLb: number;
+  maintenanceCalories: number;
+}) {
+  const toleranceLb = maintainToleranceLb(input.currentWeightLb);
+  const offsetLb = input.currentWeightLb - input.maintainWeightLb;
+  const withinTolerance = Math.abs(offsetLb) <= toleranceLb;
+  if (withinTolerance) {
+    return {
+      days: 0,
+      weightChangeLb: round(-offsetLb, 2),
+      dailyAdjustment: 0,
+      weeklyChangeLb: 0,
+      targetCalories: round(input.maintenanceCalories, 0),
+      unrealistic: false,
+      withinTolerance,
+      toleranceLb: round(toleranceLb, 2),
+    };
+  }
+  const caloriesToCorrect = Math.abs(offsetLb) * CALORIES_PER_POUND;
+  const days = Math.max(MAINTAIN_HORIZON_DAYS, Math.ceil(caloriesToCorrect / MAINTAIN_MAX_DAILY_ADJUSTMENT));
+  const dailyAdjustment = caloriesToCorrect / days;
+  const targetCalories =
+    offsetLb > 0 ? input.maintenanceCalories - dailyAdjustment : input.maintenanceCalories + dailyAdjustment;
+  return {
+    days,
+    weightChangeLb: round(-offsetLb, 2),
+    dailyAdjustment: round(dailyAdjustment, 0),
+    weeklyChangeLb: round((Math.abs(offsetLb) / days) * 7, 2),
+    targetCalories: round(targetCalories, 0),
+    unrealistic: false,
+    withinTolerance,
+    toleranceLb: round(toleranceLb, 2),
+  };
+}

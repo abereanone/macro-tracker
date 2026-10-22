@@ -1,4 +1,4 @@
-import { GOAL_WEIGHT_CALORIE_MULTIPLIER, calendarDaysInclusive, calculateFallbackGoalCalories, calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, estimateMaintenanceFromRecentWindow, estimateMaintenanceFromWeeklyAverages, toLb } from '../../src/shared/calculations';
+import { GOAL_WEIGHT_CALORIE_MULTIPLIER, calendarDaysInclusive, calculateFallbackGoalCalories, calculateGoalTarget, calculateMaintainTarget, maintainToleranceLb, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, estimateMaintenanceFromRecentWindow, estimateMaintenanceFromWeeklyAverages, toLb } from '../../src/shared/calculations';
 import { Resend } from 'resend';
 import {
   FOOD_MATCH_THRESHOLD,
@@ -182,7 +182,8 @@ async function route(ctx: Ctx) {
   if (path === '/goal-plans' && method === 'POST') return createGoalPlan(ctx, user);
   if (path === '/goal-plans' && method === 'GET') return listGoalPlans(ctx, user, url);
   if (path === '/goal-plans/active' && method === 'GET') return activeGoalPlan(ctx, await readableUser(ctx, user, url));
-  if (segments[0] === 'goal-plans' && segments[1] && method === 'PUT') return archiveGoalPlan(ctx, user, segments[1]);
+  if (segments[0] === 'goal-plans' && segments[1] && segments[2] === 'snooze' && method === 'POST') return snoozeGoalPlanPrompt(ctx, user, segments[1]);
+  if (segments[0] === 'goal-plans' && segments[1] && !segments[2] && method === 'PUT') return archiveGoalPlan(ctx, user, segments[1]);
 
   return error('NOT_FOUND', 'Route not found.', 404);
 }
@@ -1893,8 +1894,10 @@ async function createGoalPlan(ctx: Ctx, user: DbUser) {
   const input = await body(ctx);
   const goalWeightValue = positiveNumber(input.goalWeightValue, 'Goal weight');
   const goalWeightUnit = requireWeightUnit(input.goalWeightUnit ?? 'lb');
-  let targetDate: string;
-  if (input.goalMode === 'pace') {
+  let targetDate: string | null;
+  if (input.goalMode === 'maintain') {
+    targetDate = null;
+  } else if (input.goalMode === 'pace') {
     const weeklyPaceLb = positiveNumber(input.weeklyPaceLb, 'Weekly pace');
     const latestWeight = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? ORDER BY entry_date DESC LIMIT 1')
       .bind(user.id)
@@ -1907,11 +1910,11 @@ async function createGoalPlan(ctx: Ctx, user: DbUser) {
   } else {
     targetDate = requireDate(input.targetDate, 'Target date');
   }
-  if (Date.parse(`${targetDate}T00:00:00Z`) <= Date.now()) throw new ApiError('VALIDATION_ERROR', 'Target date must be in the future.');
+  if (targetDate && Date.parse(`${targetDate}T00:00:00Z`) <= Date.now()) throw new ApiError('VALIDATION_ERROR', 'Target date must be in the future.');
   await ctx.env.DB.prepare('UPDATE goal_plans SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?').bind(user.id).run();
   const goalId = id();
-  await ctx.env.DB.prepare('INSERT INTO goal_plans (id, user_id, goal_weight_value, goal_weight_unit, target_date) VALUES (?, ?, ?, ?, ?)')
-    .bind(goalId, user.id, goalWeightValue, goalWeightUnit, targetDate)
+  await ctx.env.DB.prepare('INSERT INTO goal_plans (id, user_id, goal_weight_value, goal_weight_unit, target_date, kind) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(goalId, user.id, goalWeightValue, goalWeightUnit, targetDate, targetDate ? 'target' : 'maintain')
     .run();
   return activeGoalPlan(ctx, user);
 }
@@ -1923,7 +1926,7 @@ async function listGoalPlans(ctx: Ctx, user: DbUser, url: URL) {
     : 'SELECT * FROM goal_plans WHERE user_id = ? AND (archived_at IS NULL OR archived_at = \'\') ORDER BY target_date DESC';
   const plans = await ctx.env.DB.prepare(query)
     .bind(user.id)
-    .all<{ id: string; goal_weight_value: number; goal_weight_unit: 'lb' | 'kg'; target_date: string; created_at: string; is_active: number; archived_at?: string }>();
+    .all<{ id: string; goal_weight_value: number; goal_weight_unit: 'lb' | 'kg'; target_date: string | null; kind: string; created_at: string; is_active: number; archived_at?: string }>();
   return json({ ok: true, plans: plans.results });
 }
 
@@ -1934,15 +1937,29 @@ async function archiveGoalPlan(ctx: Ctx, user: DbUser, goalId: string) {
   return json({ ok: true });
 }
 
+// Hides the "goal date reached" prompt until tomorrow in the user's timezone.
+async function snoozeGoalPlanPrompt(ctx: Ctx, user: DbUser, goalId: string) {
+  await ctx.env.DB.prepare('UPDATE goal_plans SET prompt_snoozed_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?')
+    .bind(addDays(dateInUserTimezone(user), 1), goalId, user.id)
+    .run();
+  return json({ ok: true });
+}
+
 async function activeGoalPlan(ctx: Ctx, user: DbUser) {
   const maintenance = await latestMaintenance(ctx, user);
   const plan = await ctx.env.DB.prepare('SELECT * FROM goal_plans WHERE user_id = ? AND is_active = 1 AND (archived_at IS NULL OR archived_at = \'\') ORDER BY created_at DESC LIMIT 1')
     .bind(user.id)
-    .first<{ id: string; goal_weight_value: number; goal_weight_unit: 'lb' | 'kg'; target_date: string }>();
+    .first<{ id: string; goal_weight_value: number; goal_weight_unit: 'lb' | 'kg'; target_date: string | null; kind: string; prompt_snoozed_until: string | null }>();
   if (!plan) return json({ ok: true, plan: null, maintenance });
   const latestWeight = await ctx.env.DB.prepare('SELECT * FROM weight_entries WHERE user_id = ? ORDER BY entry_date DESC LIMIT 1').bind(user.id).first<DbWeight>();
-  if (!latestWeight) return json({ ok: true, plan, maintenance, calculation: null, message: 'Add a current weight to calculate target calories.' });
-  if (!maintenance) return json({ ok: true, plan, maintenance, calculation: null, message: 'Add a current weight to estimate maintenance calories.' });
+  const today = dateInUserTimezone(user);
+  const isMaintain = plan.kind === 'maintain';
+  // A target plan whose date has arrived is "ended": the app prompts the user to
+  // maintain or set a new goal, and meanwhile the daily goal falls back to maintenance.
+  const ended = !isMaintain && plan.target_date != null && today >= plan.target_date;
+  const snoozed = ended && plan.prompt_snoozed_until != null && today < plan.prompt_snoozed_until;
+  if (!latestWeight) return json({ ok: true, plan, ended, snoozed, maintenance, calculation: null, message: 'Add a current weight to calculate target calories.' });
+  if (!maintenance) return json({ ok: true, plan, ended, snoozed, maintenance, calculation: null, message: 'Add a current weight to estimate maintenance calories.' });
   // Use the 7-day average ending at the latest weigh-in as "current weight" so a
   // single day's water-weight swing doesn't move the target. With only one entry
   // in the window this is just the latest weigh-in.
@@ -1952,10 +1969,12 @@ async function activeGoalPlan(ctx: Ctx, user: DbUser) {
     .all<DbWeight>();
   const latestWeightLb = recentWeights.results.reduce((sum, w) => sum + toLb(w.weight_value, w.weight_unit), 0) / recentWeights.results.length;
   const goalWeightLb = toLb(plan.goal_weight_value, plan.goal_weight_unit);
-  const daysToTarget = Math.max(
-    0,
-    Math.ceil((Date.parse(`${plan.target_date}T00:00:00Z`) - Date.parse(`${latestWeight.entry_date}T00:00:00Z`)) / 86_400_000),
-  );
+  const daysToTarget = plan.target_date
+    ? Math.max(
+        0,
+        Math.ceil((Date.parse(`${plan.target_date}T00:00:00Z`) - Date.parse(`${latestWeight.entry_date}T00:00:00Z`)) / 86_400_000),
+      )
+    : 0;
   const weeklyChangeLb = daysToTarget > 0 ? ((goalWeightLb - latestWeightLb) / daysToTarget) * 7 : 0;
   const goalPace = {
     latestWeight: mapWeightPoint(latestWeight),
@@ -1969,9 +1988,31 @@ async function activeGoalPlan(ctx: Ctx, user: DbUser) {
   // Maintenance is only a real estimate when it came from weigh-ins plus enough
   // logged days. Otherwise it is body weight x 10, and subtracting a deficit
   // from a guess compounds the guess — target goal body weight directly instead.
-  if (maintenance.source === 'body-weight-fallback') {
+  const usingFallback = maintenance.source === 'body-weight-fallback';
+  if (ended) {
+    const offsetLb = latestWeightLb - goalWeightLb;
+    return json({
+      ok: true,
+      plan,
+      ended,
+      snoozed,
+      reached: Math.abs(offsetLb) <= maintainToleranceLb(latestWeightLb),
+      goalPace,
+      maintenance,
+      calculation: {
+        days: 0,
+        weightChangeLb: Math.round((-offsetLb + Number.EPSILON) * 100) / 100,
+        dailyAdjustment: 0,
+        weeklyChangeLb: 0,
+        targetCalories: usingFallback ? calculateFallbackGoalCalories(goalWeightLb) : maintenance.maintenanceCalories,
+        unrealistic: false,
+        source: 'goal-ended',
+      },
+    });
+  }
+  if (usingFallback) {
     const calculation = {
-      days: calendarDaysInclusive(dateInUserTimezone(user), plan.target_date) - 1,
+      days: isMaintain ? 0 : calendarDaysInclusive(today, plan.target_date!) - 1,
       weightChangeLb: Math.round((goalWeightLb - latestWeightLb + Number.EPSILON) * 100) / 100,
       dailyAdjustment: 0,
       weeklyChangeLb: goalPace.weeklyChangeLb,
@@ -1981,16 +2022,31 @@ async function activeGoalPlan(ctx: Ctx, user: DbUser) {
       basisLb: Math.round(goalWeightLb * 10) / 10,
       multiplier: GOAL_WEIGHT_CALORIE_MULTIPLIER,
     };
-    return json({ ok: true, plan, goalPace, maintenance, calculation });
+    return json({ ok: true, plan, ended, goalPace, maintenance, calculation });
+  }
+  if (isMaintain) {
+    const maintainCalc = calculateMaintainTarget({
+      currentWeightLb: latestWeightLb,
+      maintainWeightLb: goalWeightLb,
+      maintenanceCalories: maintenance.maintenanceCalories,
+    });
+    const towardGoalSign = goalWeightLb < latestWeightLb ? -1 : 1;
+    const maintainPace = {
+      ...goalPace,
+      daysToTarget: maintainCalc.days,
+      weeklyChangeLb: maintainCalc.weeklyChangeLb * towardGoalSign,
+      direction: maintainCalc.withinTolerance ? 'maintain' : towardGoalSign < 0 ? 'lose' : 'gain',
+    };
+    return json({ ok: true, plan, ended, goalPace: maintainPace, maintenance, calculation: { ...maintainCalc, source: 'maintain' } });
   }
   const calculation = calculateGoalTarget({
     currentWeightLb: latestWeightLb,
     goalWeightLb,
-    currentDate: dateInUserTimezone(user),
-    targetDate: plan.target_date,
+    currentDate: today,
+    targetDate: plan.target_date!,
     maintenanceCalories: maintenance.maintenanceCalories,
   });
-  return json({ ok: true, plan, goalPace, maintenance, calculation });
+  return json({ ok: true, plan, ended, goalPace, maintenance, calculation });
 }
 
 async function maintenanceForRange(ctx: Ctx, user: DbUser, start: string, end: string) {

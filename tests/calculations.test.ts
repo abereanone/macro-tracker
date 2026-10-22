@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculateGoalTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, estimateMaintenanceFromRecentWindow, toLb } from '../src/shared/calculations';
+import { calculateGoalTarget, calculateMaintainTarget, calculateLoggedNutrition, calculateTotals, convertConsumedQuantityToServingQuantity, convertQuantity, convertQuantityToGrams, estimateMaintenanceCalories, estimateMaintenanceFromLoggedDays, estimateMaintenanceFromRecentWindow, toLb } from '../src/shared/calculations';
 
 describe('nutrition calculations', () => {
   it('scales logged nutrients proportionally', () => {
@@ -134,5 +134,37 @@ describe('goal planning', () => {
     expect(result.days).toBe(70);
     expect(result.dailyAdjustment).toBe(500);
     expect(result.targetCalories).toBe(2000);
+  });
+});
+
+describe('maintain planning', () => {
+  it('eats at maintenance inside the 1.5% tolerance band', () => {
+    const result = calculateMaintainTarget({ currentWeightLb: 212, maintainWeightLb: 210, maintenanceCalories: 2500 });
+    expect(result.withinTolerance).toBe(true);
+    expect(result.targetCalories).toBe(2500);
+    expect(result.dailyAdjustment).toBe(0);
+  });
+
+  it('corrects over the 28-day horizon when drift is modest', () => {
+    // 4 lb over at 214: 4 * 3500 / 28 = 500 cal/day exactly at the cap.
+    const result = calculateMaintainTarget({ currentWeightLb: 214, maintainWeightLb: 210, maintenanceCalories: 2500 });
+    expect(result.withinTolerance).toBe(false);
+    expect(result.days).toBe(28);
+    expect(result.dailyAdjustment).toBe(500);
+    expect(result.targetCalories).toBe(2000);
+  });
+
+  it('stretches the horizon so the adjustment stays within the cap', () => {
+    // 10 lb over: 35000 cal / 500 cap = 70 days.
+    const result = calculateMaintainTarget({ currentWeightLb: 220, maintainWeightLb: 210, maintenanceCalories: 2500 });
+    expect(result.days).toBe(70);
+    expect(result.dailyAdjustment).toBe(500);
+    expect(result.targetCalories).toBe(2000);
+  });
+
+  it('adds calories when under the maintain weight', () => {
+    const result = calculateMaintainTarget({ currentWeightLb: 205, maintainWeightLb: 210, maintenanceCalories: 2500 });
+    expect(result.targetCalories).toBeGreaterThan(2500);
+    expect(result.weightChangeLb).toBe(5);
   });
 });

@@ -125,7 +125,12 @@ type ActiveGoal = {
     source?: string;
     basisLb?: number;
     multiplier?: number;
+    withinTolerance?: boolean;
+    toleranceLb?: number;
   } | null;
+  ended?: boolean;
+  snoozed?: boolean;
+  reached?: boolean;
   message?: string;
 };
 type DailyGoal = {
@@ -973,7 +978,9 @@ function Dashboard({
     : { text: "Add a protein goal in settings.", tone: "neutral" };
   const calorieGoalTooltip = activeGoal?.plan
     ? [
-        `Current goal: ${activeGoal.plan.goal_weight_value} ${activeGoal.plan.goal_weight_unit} by ${activeGoal.plan.target_date}`,
+        activeGoal.plan.kind === "maintain"
+          ? `Maintaining ${activeGoal.plan.goal_weight_value} ${activeGoal.plan.goal_weight_unit}`
+          : `Current goal: ${activeGoal.plan.goal_weight_value} ${activeGoal.plan.goal_weight_unit} by ${activeGoal.plan.target_date}${activeGoal.ended ? " (date reached)" : ""}`,
         activeGoal.goalPace
           ? `Needed average: ${activeGoal.goalPace.direction === "maintain" ? "maintain weight" : `${activeGoal.goalPace.direction} ${round(fromLb(Math.abs(activeGoal.goalPace.weeklyChangeLb), user.preferredWeightUnit), 2)} ${user.preferredWeightUnit}/week`} from ${activeGoal.goalPace.averageEntryCount > 1 ? `${round(fromLb(activeGoal.goalPace.currentWeightLb, user.preferredWeightUnit), 1)} ${user.preferredWeightUnit} (average of ${activeGoal.goalPace.averageEntryCount} weigh-ins, ${activeGoal.goalPace.averageStart} to ${activeGoal.goalPace.latestWeight.date})` : `${activeGoal.goalPace.latestWeight.value} ${activeGoal.goalPace.latestWeight.unit} on ${activeGoal.goalPace.latestWeight.date}`}.`
           : "Add a current weight to calculate the weekly pace needed.",
@@ -1030,6 +1037,15 @@ function Dashboard({
           </div>
         )}
       </div>
+      {!readOnly && activeGoal?.ended && !activeGoal.snoozed && (
+        <GoalEndedPrompt
+          goal={activeGoal}
+          user={user}
+          onChanged={load}
+          onSetNewGoal={() => onNavigate?.("goals")}
+          snoozable
+        />
+      )}
       {!readOnly && (
       <div className="two-col">
         <Panel title={scan ? "Check Scanned Food" : "Log Food"}>
@@ -3207,6 +3223,118 @@ function Reports({ user, viewingUser }: { user: User; viewingUser?: FriendUser |
   );
 }
 
+// Shown once a target plan's date has arrived. Maintain is one tap so people who
+// just want to hold their weight are not asked again; maintain plans never prompt.
+function GoalEndedPrompt({
+  goal,
+  user,
+  onChanged,
+  onSetNewGoal,
+  snoozable = false,
+}: {
+  goal: any;
+  user: User;
+  onChanged: () => void;
+  onSetNewGoal?: () => void;
+  snoozable?: boolean;
+}) {
+  const unit = user.preferredWeightUnit;
+  const plan = goal.plan;
+  const currentLb: number | undefined = goal.goalPace?.currentWeightLb;
+  const maintainWeight =
+    currentLb != null
+      ? { value: round(fromLb(currentLb, unit), 1), unit }
+      : { value: plan.goal_weight_value, unit: plan.goal_weight_unit };
+  const [extendDate, setExtendDate] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const run = async (path: string, body?: unknown) => {
+    setBusy(true);
+    setError("");
+    try {
+      await api(path, {
+        method: "POST",
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Panel title="Your goal date has arrived">
+      <p>
+        Your goal of {plan.goal_weight_value} {plan.goal_weight_unit} was due{" "}
+        {plan.target_date}.{" "}
+        {currentLb != null &&
+          (goal.reached
+            ? `You're at ${maintainWeight.value} ${unit}, right on target.`
+            : `Your recent average is ${maintainWeight.value} ${unit}.`)}{" "}
+        Until you choose what's next, your daily calories are set to maintenance.
+      </p>
+      <div className="toolbar">
+        <button
+          disabled={busy}
+          onClick={() =>
+            run("/goal-plans", {
+              goalMode: "maintain",
+              goalWeightValue: maintainWeight.value,
+              goalWeightUnit: maintainWeight.unit,
+            })
+          }
+        >
+          Maintain {maintainWeight.value} {maintainWeight.unit}
+        </button>
+        {onSetNewGoal && (
+          <button className="ghost" disabled={busy} onClick={onSetNewGoal}>
+            Set a new goal
+          </button>
+        )}
+        {snoozable && (
+          <button
+            className="ghost"
+            disabled={busy}
+            onClick={() => run(`/goal-plans/${plan.id}/snooze`)}
+          >
+            Remind me tomorrow
+          </button>
+        )}
+      </div>
+      <div className="toolbar">
+        <input
+          type="date"
+          value={extendDate}
+          min={addDaysToDate(today(), 1)}
+          onChange={(event) => setExtendDate(event.target.value)}
+        />
+        <button
+          className="ghost"
+          disabled={busy || !extendDate}
+          onClick={() =>
+            run("/goal-plans", {
+              goalMode: "date",
+              goalWeightValue: plan.goal_weight_value,
+              goalWeightUnit: plan.goal_weight_unit,
+              targetDate: extendDate,
+            })
+          }
+        >
+          Extend to this date
+        </button>
+      </div>
+      {error && <p className="error-text">{error}</p>}
+    </Panel>
+  );
+}
+
+function addDaysToDate(date: string, days: number) {
+  const d = new Date(`${date}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return d.toLocaleDateString("en-CA");
+}
+
 function Goals({ user, viewingUser }: { user: User; viewingUser?: FriendUser | null }) {
   const weightUnit = user.preferredWeightUnit;
   const fmtLb = (lb: number) => `${round(fromLb(lb, weightUnit), 1)} ${weightUnit}`;
@@ -3214,7 +3342,7 @@ function Goals({ user, viewingUser }: { user: User; viewingUser?: FriendUser | n
   const caloriesPerUnit = weightUnit === "kg" ? CALORIES_PER_KG : CALORIES_PER_POUND;
   const fmtUnit = (lb: number) => round(fromLb(lb, weightUnit), 1);
   const [activePlan, setActivePlan] = useState<any>(null);
-  const [goalMode, setGoalMode] = useState<"date" | "pace">("date");
+  const [goalMode, setGoalMode] = useState<"date" | "pace" | "maintain">("date");
   const readOnly = Boolean(viewingUser);
   const loadActive = () => api(withOwner("/goal-plans/active", viewingUser)).then(setActivePlan);
   useEffect(() => {
@@ -3232,15 +3360,50 @@ function Goals({ user, viewingUser }: { user: User; viewingUser?: FriendUser | n
   return (
     <section>
       <Header title={viewingUser ? `${viewingUser.name}'s Goals` : "Goals"} icon={<Target />} />
+      {!readOnly && activePlan?.ended && (
+        <GoalEndedPrompt goal={activePlan} user={user} onChanged={loadActive} />
+      )}
       {activePlan?.plan && (
         <Panel title="Current Goal">
-          <p>
-            <strong>Goal:</strong>{" "}
-            {activePlan.plan.goal_weight_value}{" "}
-            {activePlan.plan.goal_weight_unit} by{" "}
-            {activePlan.plan.target_date}
-          </p>
-          {activePlan.goalPace ? (
+          {activePlan.plan.kind === "maintain" ? (
+            <p>
+              <strong>Maintaining:</strong> {activePlan.plan.goal_weight_value}{" "}
+              {activePlan.plan.goal_weight_unit}
+            </p>
+          ) : (
+            <p>
+              <strong>Goal:</strong> {activePlan.plan.goal_weight_value}{" "}
+              {activePlan.plan.goal_weight_unit} by {activePlan.plan.target_date}
+              {activePlan.ended ? " (date reached)" : ""}
+            </p>
+          )}
+          {activePlan.plan.kind === "maintain" ? (
+            calculation ? (
+              calculation.withinTolerance ? (
+                <p>
+                  You're within {fmtLb(calculation.toleranceLb)} of{" "}
+                  {activePlan.plan.goal_weight_value}{" "}
+                  {activePlan.plan.goal_weight_unit}, so your daily calories
+                  stay at maintenance.
+                </p>
+              ) : (
+                <p>
+                  You're {fmtLb(Math.abs(calculation.weightChangeLb))}{" "}
+                  {calculation.weightChangeLb < 0 ? "above" : "below"} your
+                  maintain weight, outside the ±{fmtLb(calculation.toleranceLb)}{" "}
+                  range. Calories are adjusted by {calculation.dailyAdjustment}{" "}
+                  per day to bring you back over about {calculation.days} days.
+                </p>
+              )
+            ) : (
+              <p>Add a current weight to calculate target calories.</p>
+            )
+          ) : activePlan.ended ? (
+            <p>
+              Your goal date has passed. Until you choose what's next, your
+              daily calories are set to maintenance.
+            </p>
+          ) : activePlan.goalPace ? (
             activePlan.goalPace.direction === "maintain" ? (
               <p>You need to maintain weight to achieve this goal.</p>
             ) : (
@@ -3415,8 +3578,21 @@ function Goals({ user, viewingUser }: { user: User; viewingUser?: FriendUser | n
             >
               Pace
             </button>
+            <button
+              type="button"
+              className={goalMode === "maintain" ? "active" : "ghost"}
+              onClick={() => setGoalMode("maintain")}
+            >
+              Maintain
+            </button>
           </div>
-          {goalMode === "date" ? (
+          {goalMode === "maintain" ? (
+            <small>
+              Holds this weight with no end date. Daily calories stay at
+              maintenance while you're within 1.5% of it, and adjust gradually
+              if you drift further.
+            </small>
+          ) : goalMode === "date" ? (
             <input name="targetDate" type="date" required />
           ) : (
             <input
