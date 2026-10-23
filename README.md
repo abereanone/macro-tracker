@@ -50,6 +50,10 @@ The API requires Pages Functions and D1, so use `npm run preview` for end-to-end
 - `npm run preview` serves the built app through Wrangler Pages with local D1.
 - `npm run db:migrate` applies D1 migrations locally.
 - `npm test` runs unit tests.
+- `npm run db:migrate:remote` applies D1 migrations to the production database.
+- `npm run db:clone:remote` copies the production data into the local D1 (`scripts/clone-remote-db.mjs`): exports the remote data, empties the local tables in dependency order, imports the dump, replays the migration ledger and prints row counts before and after. Run it with the dev server stopped.
+- `npm run foods:foundation:sql` runs `scripts/generate-foundation-food-inserts.mjs` on the USDA FoodData Central Foundation Foods JSON and writes `foundation-food-inserts.sql`. **That script is git-ignored (local only)**, so this command works only on the machine that has it. It hard-codes the owner user ID.
+- `scripts/copy-404.mjs` runs at the end of `npm run build`: it copies `dist/index.html` to `dist/404.html` so the single-page app handles unknown paths on Cloudflare Pages.
 
 ## Main API Areas
 
