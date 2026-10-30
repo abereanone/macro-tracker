@@ -164,6 +164,7 @@ async function route(ctx: Ctx) {
 
   if (segments[0] === 'days' && segments[1] && method === 'GET') return getDay(ctx, await readableUser(ctx, user, url), segments[1]);
   if (path === '/diary-items' && method === 'POST') return createDiaryItem(ctx, user);
+  if (path === '/diary-calories' && method === 'POST') return createDiaryCalories(ctx, user);
   if (segments[0] === 'diary-items' && segments[1] && method === 'PUT') return updateDiaryItem(ctx, user, segments[1]);
   if (segments[0] === 'diary-items' && segments[1] && method === 'DELETE') return deleteDiaryItem(ctx, user, segments[1]);
   if (segments[0] === 'diary-groups' && segments[1] && method === 'DELETE') return deleteDiaryGroup(ctx, user, segments[1]);
@@ -1235,9 +1236,25 @@ async function createDiaryItem(ctx: Ctx, user: DbUser) {
   return json({ ok: true, item: await diaryItem(ctx, user, diaryId) });
 }
 
+// Calorie-only entry: no food, no macros. food_id is NULL and quantity holds the calories.
+async function createDiaryCalories(ctx: Ctx, user: DbUser) {
+  const input = await body(ctx);
+  const eatenDate = requireDate(input.eatenDate, 'Date');
+  const mealLabel = optionalString(input.mealLabel);
+  const calories = positiveNumber(input.calories, 'Calories');
+  const diaryId = id();
+  await ctx.env.DB.prepare(
+    `INSERT INTO diary_items (id, user_id, food_id, eaten_date, meal_label, quantity, quantity_unit, protein_g, fat_g, carbohydrate_g, calories)
+     VALUES (?, ?, NULL, ?, ?, ?, 'cal', 0, 0, 0, ?)`,
+  )
+    .bind(diaryId, user.id, eatenDate, mealLabel, calories, calories)
+    .run();
+  return json({ ok: true, item: await diaryItem(ctx, user, diaryId) });
+}
+
 async function diaryItem(ctx: Ctx, user: DbUser, itemId: string) {
   const item = await ctx.env.DB.prepare(
-    `SELECT di.*, f.description AS foodDescription FROM diary_items di JOIN foods f ON f.id = di.food_id WHERE di.id = ? AND di.user_id = ?`,
+    `SELECT di.*, COALESCE(f.description, 'Calories') AS foodDescription FROM diary_items di LEFT JOIN foods f ON f.id = di.food_id WHERE di.id = ? AND di.user_id = ?`,
   )
     .bind(itemId, user.id)
     .first();
@@ -1247,6 +1264,7 @@ async function diaryItem(ctx: Ctx, user: DbUser, itemId: string) {
 
 async function updateDiaryItem(ctx: Ctx, user: DbUser, itemId: string) {
   const current = await diaryItem(ctx, user, itemId);
+  if (!current.food_id) throw new ApiError('BAD_REQUEST', 'Calorie-only entries cannot be edited. Delete and re-add.', 400);
   const data = diaryPayload({ ...(await body(ctx)), foodId: String(current.food_id) });
   const food = await visibleFood(ctx, user, String(current.food_id));
   const servingQuantity = convertConsumedQuantityToServingQuantity(
@@ -1300,9 +1318,9 @@ async function addMealToDiary(ctx: Ctx, user: DbUser, mealId: string) {
 async function getDay(ctx: Ctx, user: DbUser, date: string) {
   const eatenDate = requireDate(date);
   const items = await ctx.env.DB.prepare(
-    `SELECT di.*, f.description AS foodDescription, sm.name AS savedMealName
+    `SELECT di.*, COALESCE(f.description, 'Calories') AS foodDescription, sm.name AS savedMealName
      FROM diary_items di
-     JOIN foods f ON f.id = di.food_id
+     LEFT JOIN foods f ON f.id = di.food_id
      LEFT JOIN saved_meals sm ON sm.id = di.source_saved_meal_id
      WHERE di.user_id = ? AND di.eaten_date = ? ORDER BY di.created_at`,
   )

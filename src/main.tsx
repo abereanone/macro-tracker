@@ -860,6 +860,8 @@ function Dashboard({
   const [foodQuantity, setFoodQuantity] = useState("");
   const [foodQuantityUnit, setFoodQuantityUnit] = useState("g");
   const [addingFood, setAddingFood] = useState(false);
+  const [quickCalories, setQuickCalories] = useState("");
+  const [addingCalories, setAddingCalories] = useState(false);
   const [scan, setScan] = useState<LabelScanDraft | null>(null);
   // Memoized: FoodForm resets its fields whenever the food object changes.
   const scannedFood = useMemo(
@@ -912,6 +914,22 @@ function Dashboard({
       `${meal.name} added to ${mealLabel} - ${savedMealCalories(meal)} cal`,
     );
     load();
+  };
+  const addCalories = async () => {
+    const calories = Number(quickCalories);
+    if (!(calories > 0) || addingCalories) return;
+    setAddingCalories(true);
+    try {
+      await api("/diary-calories", {
+        method: "POST",
+        body: JSON.stringify({ eatenDate: date, mealLabel, calories }),
+      });
+      setPopupMessage(`${Math.round(calories)} cal added to ${mealLabel}`);
+      setQuickCalories("");
+      load();
+    } finally {
+      setAddingCalories(false);
+    }
   };
   useEffect(() => {
     setWeightValue(weightInPreferredUnit(day?.weight, user.preferredWeightUnit));
@@ -1271,6 +1289,36 @@ function Dashboard({
             </small>
           )}
         </Panel>
+        <Panel title="Add Calories">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              addCalories();
+            }}
+          >
+            {user.showMealLabels && (
+              <MealLabelPicker value={mealLabel} onChange={setMealLabel} />
+            )}
+            <div className="row">
+              <input
+                name="quickCalories"
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="any"
+                placeholder="Calories"
+                aria-label="Calories"
+                value={quickCalories}
+                onChange={(event) => setQuickCalories(event.target.value)}
+                required
+              />
+              <button disabled={!(Number(quickCalories) > 0) || addingCalories}>
+                <Plus size={16} /> {addingCalories ? "Adding..." : "Add calories"}
+              </button>
+            </div>
+            <small>Counts toward calories only, no protein, fat or carbs.</small>
+          </form>
+        </Panel>
       </div>
       )}
       {totals && (
@@ -1403,15 +1451,21 @@ function Dashboard({
                     <small>
                       {user.showMealLabels &&
                         `${item.meal_label ?? "Other"} · `}
-                      <DiaryQuantity
-                        item={item}
-                        readOnly={readOnly}
-                        onSaved={load}
-                      />
+                      {item.food_id ? (
+                        <DiaryQuantity
+                          item={item}
+                          readOnly={readOnly}
+                          onSaved={load}
+                        />
+                      ) : (
+                        "calories only"
+                      )}
                     </small>
                   </span>
                   <span>
-                    {Math.round(item.calories)}cal · {Math.round(item.protein_g)}P {Math.round(item.fat_g)}F {Math.round(item.carbohydrate_g)}C
+                    {item.food_id
+                      ? `${Math.round(item.calories)}cal · ${Math.round(item.protein_g)}P ${Math.round(item.fat_g)}F ${Math.round(item.carbohydrate_g)}C`
+                      : `${Math.round(item.calories)}cal`}
                   </span>
                   {!readOnly && (
                     <button
